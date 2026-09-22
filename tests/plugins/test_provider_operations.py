@@ -81,7 +81,7 @@ def test_github_release_configuration_rejects_inline_tokens() -> None:
     with pytest.raises(ValidationError):
         GithubReleaseConfig.model_validate(
             {
-                "repository": "0ctacity/omniship",
+                "repository": "octacity-org/omniship",
                 "tag": "v1.0.0",
                 "token": "must-not-be-accepted",
             }
@@ -98,15 +98,15 @@ def test_imperative_github_release_uses_context_artifacts(tmp_path: Path) -> Non
     )
 
     result = GitHub(context).release(
-        repository="0ctacity/omniship",
+        repository="octacity-org/omniship",
         tag="v1.0.0",
         dry_run=True,
     )
 
     assert result == GitHubReleaseResult(
-        repository="0ctacity/omniship",
+        repository="octacity-org/omniship",
         tag="v1.0.0",
-        release_url="https://github.com/0ctacity/omniship/releases/tag/v1.0.0",
+        release_url="https://github.com/octacity-org/omniship/releases/tag/v1.0.0",
         uploaded_count=1,
     )
     assert "Simulated release" in "\n".join(context.log.lines)
@@ -117,13 +117,13 @@ def test_imperative_github_tag_supports_dry_run(tmp_path: Path) -> None:
     context = TaskContext(tmp_path, {"GITHUB_SHA": "abc123"})
 
     result = GitHub(context).tag(
-        repository="0ctacity/omniship",
+        repository="octacity-org/omniship",
         tag="v1.0.0",
         dry_run=True,
     )
 
     assert result == GitHubTagResult(
-        repository="0ctacity/omniship",
+        repository="octacity-org/omniship",
         tag="v1.0.0",
         target="abc123",
     )
@@ -150,7 +150,7 @@ async def test_github_tag_operation_delegates_to_imperative_facade(
         ExecutionContext(workspace_root=tmp_path, stage=Stage.SHIP),
         NodeInputs(
             params={
-                "repository": "0ctacity/omniship",
+                "repository": "octacity-org/omniship",
                 "tag": "v1.0.0",
                 "target": "abc123",
                 "force": True,
@@ -162,7 +162,7 @@ async def test_github_tag_operation_delegates_to_imperative_facade(
     assert result.is_success
     assert calls == [
         {
-            "repository": "0ctacity/omniship",
+            "repository": "octacity-org/omniship",
             "tag": "v1.0.0",
             "target": "abc123",
             "force": True,
@@ -193,7 +193,7 @@ async def test_github_release_operation_delegates_to_imperative_facade(
         ExecutionContext(workspace_root=tmp_path, stage=Stage.SHIP),
         NodeInputs(
             params={
-                "repository": "0ctacity/omniship",
+                "repository": "octacity-org/omniship",
                 "tag": "v1.0.0",
                 "generate_notes": True,
                 "title": "OmniShip 1.0",
@@ -208,7 +208,7 @@ async def test_github_release_operation_delegates_to_imperative_facade(
     assert result.outputs["release_url"] == "https://example.test/release"
     assert calls == [
         {
-            "repository": "0ctacity/omniship",
+            "repository": "octacity-org/omniship",
             "tag": "v1.0.0",
             "notes": "auto",
             "title": "OmniShip 1.0",
@@ -230,7 +230,7 @@ async def test_github_release_requires_environment_token(
     result = await GithubReleaseOperation().execute(
         ExecutionContext(workspace_root=tmp_path, stage=Stage.SHIP),
         NodeInputs(
-            params={"repository": "0ctacity/omniship", "tag": "v1.0.0"}
+            params={"repository": "octacity-org/omniship", "tag": "v1.0.0"}
         ),
     )
 
@@ -251,7 +251,7 @@ async def test_github_release_dry_run_does_not_require_token(
         ExecutionContext(workspace_root=tmp_path, stage=Stage.SHIP),
         NodeInputs(
             params={
-                "repository": "0ctacity/omniship",
+                "repository": "octacity-org/omniship",
                 "tag": "v1.0.0",
                 "dry_run": True,
             }

@@ -31,7 +31,7 @@ class ToolFacade:
         arguments: Sequence[str],
         *,
         env: Mapping[str, str] | None = None,
-    ) -> None:
+    ) -> str:
         process = subprocess.Popen(
             list(arguments),
             cwd=self.context.workspace,
@@ -48,6 +48,7 @@ class ToolFacade:
             self.context.log.output(line.rstrip("\r\n"))
         if process.wait() != 0:
             raise TaskFailure("".join(output).strip() or f"{arguments[0]} failed")
+        return "".join(output)
 
     def _require_env(self, name: str, *, dry_run: bool) -> None:
         if not dry_run and not self.context.env.get(name):

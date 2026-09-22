@@ -4,7 +4,9 @@ from .actions import (
     GitHubBooleanInput,
     GitHubBootstrap,
     GitHubCheckout,
+    GitHubContainer,
     GitHubJob,
+    GitHubMatrix,
     GitHubPermission,
     GitHubPermissions,
     GitHubPullRequest,
@@ -16,7 +18,7 @@ from .actions import (
     GitHubWorkflowArtifacts,
     GitHubWorkflowDispatch,
 )
-from .blocks import GitHubPages, GitHubRelease, GitHubTag
+from .blocks import GitHubExternalWorkflow, GitHubPages, GitHubRelease, GitHubTag
 from .operations import register_github_plugin
 from .runtime import GitHub, GitHubPagesResult, GitHubTagResult
 
@@ -26,7 +28,10 @@ __all__ = [
     "GitHubBootstrap",
     "GitHubBooleanInput",
     "GitHubCheckout",
+    "GitHubExternalWorkflow",
+    "GitHubContainer",
     "GitHubJob",
+    "GitHubMatrix",
     "GitHubPermission",
     "GitHubPermissions",
     "GitHubPullRequest",

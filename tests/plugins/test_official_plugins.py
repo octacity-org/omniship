@@ -51,6 +51,7 @@ def test_official_plugins_have_independent_registration_boundaries() -> None:
     github = PluginRegistry()
     register_github_plugin(github)
     assert _operation_names(github) == {
+        "github/external-workflow",
         "github/pages",
         "github/release",
         "github/tag",
@@ -72,7 +73,13 @@ def test_official_plugins_have_independent_registration_boundaries() -> None:
             "node/npm-publish",
         },
         register_bun_plugin: {"bun/install", "bun/test", "bun/build"},
-        register_go_plugin: {"go/test", "go/build"},
+        register_go_plugin: {
+            "go/fmt",
+            "go/mod-download",
+            "go/vet",
+            "go/test",
+            "go/build",
+        },
         register_rust_plugin: {
             "rust/cargo-test",
             "rust/cargo-build",
@@ -97,9 +104,7 @@ def test_public_types_are_owned_by_their_provider_packages() -> None:
 
 
 def test_package_entry_points_discover_official_plugins_separately() -> None:
-    pyproject = tomllib.loads(
-        Path("pyproject.toml").read_text(encoding="utf-8")
-    )
+    pyproject = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
 
     assert pyproject["project"]["entry-points"]["omniship.plugins"] == {
         "core": "omniship.operations:register_core_plugin",

@@ -5,7 +5,7 @@ from omniship.plugins.github import (
     GitHubRelease,
     GitHubRunner,
 )
-from omniship.plugins.python import Pytest, Ruff, Wheel
+from omniship.plugins.python import PyPIPublish, Pytest, Ruff, Wheel
 
 github = GitHubActions(
     bootstrap=GitHubBootstrap.WORKSPACE,
@@ -42,9 +42,14 @@ def build(stage):
 
 @pipeline.ship
 def ship(stage):
+    publish = stage.task(
+        PyPIPublish(trusted_publishing=True),
+        execution=github.job(environment="release"),
+    )
     stage.task(
         GitHubRelease(
-            repository="0ctacity/omniship",
+            repository="octacity-org/omniship",
             notes="auto",
         ),
+        after=[publish],
     )

@@ -23,7 +23,7 @@ def build(stage):
 def ship(stage):
     stage.task(
         GitHubRelease(
-            repository="0ctacity/omniship",
+            repository="octacity-org/omniship",
             tag="v0.1.0",
             notes="auto",
             dry_run=True,

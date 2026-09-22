@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import re
 import subprocess
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping
+from uuid import uuid4
 
 from omniship.core.artifact import Artifact
 from omniship.core.execution import ExecutionHost
@@ -79,6 +81,33 @@ class TaskArtifacts:
         return artifact
 
 
+@dataclass
+class TaskOutputs:
+    """Named values a task can expose to dependent GitHub jobs."""
+
+    output_file: str | None = None
+    values: dict[str, str] = field(default_factory=dict)
+
+    def set(self, name: str, value: str) -> None:
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) is None:
+            raise ValueError("task output name must be an identifier")
+        if not isinstance(value, str):
+            raise TypeError("task output value must be a string")
+        self.values[name] = value
+        if self.output_file is None:
+            return
+        if "\n" in value or "\r" in value:
+            delimiter = f"omniship_{uuid4().hex}"
+            entry = f"{name}<<{delimiter}\n{value}\n{delimiter}\n"
+        else:
+            entry = f"{name}={value}\n"
+        with Path(self.output_file).open("a", encoding="utf-8") as output:
+            output.write(entry)
+
+    def get(self, name: str) -> str | None:
+        return self.values.get(name)
+
+
 @dataclass(frozen=True)
 class GitTools:
     workspace_root: Path
@@ -123,6 +152,7 @@ class TaskContext:
         self.env = dict(env)
         self.log = TaskLog(_emit=log_sink)
         self.artifacts = TaskArtifacts(self.workspace, tuple(artifacts))
+        self.outputs = TaskOutputs(self.env.get("GITHUB_OUTPUT"))
         self.inputs = dict(inputs or {})
         self.git = GitTools(self.workspace)
         self.host = host or ExecutionHost.detect()

@@ -8,8 +8,12 @@ from omniship.config.models import NodeConfig, OmniShipConfig
 from omniship.core.execution import CacheSpec, SecretRef
 from omniship.plugins.github import (
     GitHubActions,
+    GitHubActionStep,
     GitHubBooleanInput,
     GitHubBootstrap,
+    GitHubContainer,
+    GitHubExternalWorkflow,
+    GitHubMatrix,
     GitHubPermission,
     GitHubPermissions,
     GitHubPullRequest,
@@ -23,6 +27,8 @@ from omniship.plugins.github import (
 )
 from omniship.plugins.github.actions import GitHubActionsGenerator
 from omniship.plugins.registry import PluginRegistry
+from omniship.runtime import TaskContext
+from omniship.workflow.compiler import compile_pipeline
 from omniship.workflow.model import Pipeline
 
 
@@ -44,6 +50,113 @@ def _generated_check_document(
     return yaml.safe_load(check_file.content)
 
 
+def test_external_workflow_is_one_dependent_github_job(tmp_path: Path) -> None:
+    github = GitHubActions()
+    pipeline = Pipeline(targets=[github])
+
+    @pipeline.check
+    def check(stage):
+        first = stage.task(
+            GitHubExternalWorkflow(
+                "octacity-org/ci/security.yml",
+                ref="v1",
+                inputs={"level": "strict"},
+                secrets={"token": SecretRef("SECURITY_TOKEN")},
+                permissions=GitHubPermissions(contents=GitHubPermission.READ),
+                name="security",
+            )
+        )
+        stage.task(
+            GitHubExternalWorkflow("octacity-org/ci/audit.yml", ref="v2", name="audit"),
+            after=[first],
+        )
+
+    config = compile_pipeline(pipeline, tmp_path / "workflow.py")
+    generated = GitHubActionsGenerator(PluginRegistry()).generate(
+        config, tmp_path / "workflow.py", tmp_path / "omniship.yaml", pipeline
+    )
+    document = yaml.safe_load(
+        next(item.content for item in generated if item.path.name == "check.yml")
+    )
+    security = document["jobs"]["check-security"]
+    audit = document["jobs"]["check-audit"]
+
+    assert config.check["audit"].needs == ["security"]
+    assert security == {
+        "name": "Check · Security",
+        "needs": "prepare",
+        "uses": "octacity-org/ci/.github/workflows/security.yml@v1",
+        "with": {"level": "strict"},
+        "secrets": {"token": "${{ secrets.SECURITY_TOKEN }}"},
+        "permissions": {"contents": "read"},
+    }
+    assert audit["needs"] == "check-security"
+    assert audit["uses"] == "octacity-org/ci/.github/workflows/audit.yml@v2"
+    assert "runs-on" not in audit and "steps" not in audit
+    assert document["jobs"]["check-complete"]["needs"] == "check-audit"
+
+
+def test_external_workflow_rejects_invalid_reference_and_runner_placement(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(ValueError, match="owner/repo/workflow"):
+        GitHubExternalWorkflow("octacity-org/ci/.github/workflows/check.yml", ref="v1")
+    with pytest.raises(ValueError, match="ref"):
+        GitHubExternalWorkflow("octacity-org/ci/check.yml", ref="")
+
+    github = GitHubActions()
+    pipeline = Pipeline(targets=[github])
+
+    @pipeline.check
+    def check(stage):
+        stage.task(
+            GitHubExternalWorkflow("octacity-org/ci/check.yml", ref="v1"),
+            execution=github.job(),
+        )
+
+    config = compile_pipeline(pipeline, tmp_path / "workflow.py")
+    with pytest.raises(ValueError, match="cannot have runner placement"):
+        GitHubActionsGenerator(PluginRegistry()).generate(
+            config, tmp_path / "workflow.py", tmp_path / "omniship.yaml", pipeline
+        )
+
+
+def test_external_build_does_not_claim_omniship_artifacts(tmp_path: Path) -> None:
+    github = GitHubActions()
+    pipeline = Pipeline(targets=[github])
+
+    @pipeline.build
+    def build(stage):
+        stage.task(
+            GitHubExternalWorkflow(
+                "octacity-org/ci/build.yml", ref="v1", name="external-build"
+            )
+        )
+
+    @pipeline.ship
+    def ship(stage):
+        @stage.task
+        def publish(ctx):
+            pass
+
+    config = compile_pipeline(pipeline, tmp_path / "workflow.py")
+    generated = GitHubActionsGenerator(PluginRegistry()).generate(
+        config, tmp_path / "workflow.py", tmp_path / "omniship.yaml", pipeline
+    )
+    build_document = yaml.safe_load(
+        next(item.content for item in generated if item.path.name == "build.yml")
+    )
+    ship_document = yaml.safe_load(
+        next(item.content for item in generated if item.path.name == "ship.yml")
+    )
+
+    assert "steps" not in build_document["jobs"]["build-external-build"]
+    assert not any(
+        "download-artifact" in step.get("uses", "")
+        for step in ship_document["jobs"]["ship-publish"]["steps"]
+    )
+
+
 def test_github_actions_bootstraps_omniship_as_an_isolated_tool_by_default(
     tmp_path: Path,
 ) -> None:
@@ -52,7 +165,9 @@ def test_github_actions_bootstraps_omniship_as_an_isolated_tool_by_default(
     prepare_steps = document["jobs"]["prepare"]["steps"]
     task_steps = document["jobs"]["check-verify"]["steps"]
 
-    assert all(step.get("run") != "uv sync --all-groups --locked" for step in task_steps)
+    assert all(
+        step.get("run") != "uv sync --all-groups --locked" for step in task_steps
+    )
     assert prepare_steps[-1]["run"].startswith(
         "uvx --from omniship==0.1.0 omniship generate"
     )
@@ -144,6 +259,175 @@ def test_github_actions_creates_a_fully_configured_job() -> None:
     assert placement.caches == (cache,)
 
 
+def test_github_job_compiles_matrix_container_steps_and_environment(
+    tmp_path: Path,
+) -> None:
+    github = GitHubActions()
+    placement = github.job(
+        runners=[GitHubRunner.UBUNTU_24_04],
+        matrix=GitHubMatrix(
+            axes={"go": ["1.25", "1.26"], "variant": ["static", "dynamic"]},
+            exclude=[{"go": "1.25", "variant": "dynamic"}],
+            include=[{"runner": "ubuntu-24.04", "go": "1.27", "variant": "static"}],
+        ),
+        max_parallel=2,
+        container=GitHubContainer(image="golang:1.26"),
+        services={"postgres": GitHubContainer(image="postgres:17", ports=[5432])},
+        before_steps=[
+            GitHubActionStep(
+                "setup-go", "Set up Go", {"go-version": github.matrix("go")}
+            )
+        ],
+        after_steps=[
+            GitHubActionStep("cache", "Save cache", {"path": "build", "key": "build"})
+        ],
+        environment="release",
+        environment_url="https://example.com/release",
+        env={"GO_VERSION": github.matrix("go")},
+    )
+    config = OmniShipConfig(
+        check={"verify": NodeConfig(uses="core/noop", execution=placement)}
+    )
+    generated = GitHubActionsGenerator(PluginRegistry()).generate(
+        config,
+        tmp_path / "workflow.py",
+        tmp_path / "omniship.yaml",
+        Pipeline(targets=[github]),
+    )
+    document = yaml.safe_load(
+        next(item.content for item in generated if item.path.name == "check.yml")
+    )
+    job = document["jobs"]["check-verify"]
+
+    assert job["strategy"]["matrix"] == {
+        "runner": ["ubuntu-24.04"],
+        "go": ["1.25", "1.26"],
+        "variant": ["static", "dynamic"],
+        "exclude": [{"go": "1.25", "variant": "dynamic"}],
+        "include": [{"runner": "ubuntu-24.04", "go": "1.27", "variant": "static"}],
+    }
+    assert job["runs-on"] == "${{ matrix.runner }}"
+    assert job["strategy"]["max-parallel"] == 2
+    assert job["container"] == {"image": "golang:1.26"}
+    assert job["services"] == {"postgres": {"image": "postgres:17", "ports": [5432]}}
+    assert job["environment"] == {
+        "name": "release",
+        "url": "https://example.com/release",
+    }
+    assert any(
+        step.get("name") == "Set up Go"
+        and step.get("with", {}).get("go-version") == "${{ matrix.go }}"
+        for step in job["steps"]
+    )
+    assert any(step.get("name") == "Save cache" for step in job["steps"])
+    run_step = next(step for step in job["steps"] if step.get("name") == "Run Verify")
+    assert run_step["env"]["GO_VERSION"] == "${{ matrix.go }}"
+
+
+def test_github_job_outputs_are_available_to_dependent_job(tmp_path: Path) -> None:
+    github = GitHubActions()
+    producer = github.job(outputs=["version"])
+    consumer = github.job(env={"VERSION": github.output("check", "prepare", "version")})
+    config = OmniShipConfig(
+        check={
+            "prepare": NodeConfig(uses="core/noop", execution=producer),
+            "consume": NodeConfig(
+                uses="core/noop", needs=["prepare"], execution=consumer
+            ),
+        }
+    )
+    generated = GitHubActionsGenerator(PluginRegistry()).generate(
+        config,
+        tmp_path / "workflow.py",
+        tmp_path / "omniship.yaml",
+        Pipeline(targets=[github]),
+    )
+    document = yaml.safe_load(
+        next(item.content for item in generated if item.path.name == "check.yml")
+    )
+    assert document["jobs"]["check-prepare"]["outputs"] == {
+        "version": "${{ steps.omniship.outputs.version }}"
+    }
+    assert document["jobs"]["check-consume"]["steps"][-1]["env"]["VERSION"] == (
+        "${{ needs.check-prepare.outputs.version }}"
+    )
+
+
+def test_github_output_reference_requires_a_declared_dependency(tmp_path: Path) -> None:
+    github = GitHubActions()
+    config = OmniShipConfig(
+        check={
+            "prepare": NodeConfig(
+                uses="core/noop", execution=github.job(outputs=["version"])
+            ),
+            "consume": NodeConfig(
+                uses="core/noop",
+                execution=github.job(
+                    env={"VERSION": github.output("check", "prepare", "version")}
+                ),
+            ),
+        }
+    )
+
+    with pytest.raises(ValueError, match="depend"):
+        GitHubActionsGenerator(PluginRegistry()).generate(
+            config,
+            tmp_path / "workflow.py",
+            tmp_path / "omniship.yaml",
+            Pipeline(targets=[github]),
+        )
+
+
+def test_task_context_writes_declared_github_outputs(tmp_path: Path) -> None:
+    output_file = tmp_path / "github-output"
+    context = TaskContext(tmp_path, {"GITHUB_OUTPUT": str(output_file)})
+
+    context.outputs.set("version", "1.2.3")
+    context.outputs.set("notes", "first\nsecond")
+
+    assert context.outputs.get("version") == "1.2.3"
+    content = output_file.read_text(encoding="utf-8")
+    assert "version=1.2.3\n" in content
+    assert "notes<<" in content
+    assert "first\nsecond\n" in content
+
+
+def test_github_matrix_include_requires_configured_runner() -> None:
+    github = GitHubActions()
+    with pytest.raises(ValueError, match="runner"):
+        github.job(
+            matrix=GitHubMatrix(
+                axes={"version": ["1", "2"]},
+                include=[{"version": "3"}],
+            )
+        )
+
+
+def test_github_action_step_accepts_explicit_pinned_action(tmp_path: Path) -> None:
+    github = GitHubActions()
+    reference = "docker/login-action@" + "a" * 40
+    placement = github.job(before_steps=[GitHubActionStep(reference, "Log in")])
+    config = OmniShipConfig(
+        check={"verify": NodeConfig(uses="core/noop", execution=placement)}
+    )
+
+    generated = GitHubActionsGenerator(PluginRegistry()).generate(
+        config,
+        tmp_path / "workflow.py",
+        tmp_path / "omniship.yaml",
+        Pipeline(targets=[github]),
+    )
+    document = yaml.safe_load(
+        next(item.content for item in generated if item.path.name == "check.yml")
+    )
+    assert {"name": "Log in", "uses": reference} in document["jobs"]["check-verify"][
+        "steps"
+    ]
+
+    with pytest.raises(ValueError, match="SHA"):
+        GitHubActionStep("docker/login-action@v3", "Log in")
+
+
 def test_github_actions_builds_cache_keys_and_secret_references() -> None:
     github = GitHubActions()
 
@@ -191,13 +475,13 @@ def test_github_actions_declares_reviewed_workflow_artifacts() -> None:
     run_id = GitHubStringInput("source_run_id", required=True)
 
     requirement = github.workflow_artifacts(
-        repository="0ctacity/omniship",
+        repository="octacity-org/omniship",
         run_id=run_id,
         pattern="omniship-build-*",
         token=github.secret("SOURCE_REPOSITORY_TOKEN"),
     )
 
-    assert requirement.repository == "0ctacity/omniship"
+    assert requirement.repository == "octacity-org/omniship"
     assert requirement.run_id is run_id
     assert requirement.token == SecretRef("SOURCE_REPOSITORY_TOKEN")
 
@@ -273,7 +557,7 @@ def test_github_generator_reviews_and_imports_prior_workflow_artifacts(
     )
     github = GitHubActions()
     requirement = github.workflow_artifacts(
-        repository="0ctacity/omniship",
+        repository="octacity-org/omniship",
         run_id=42,
         pattern="omniship-build-*",
     )
@@ -297,25 +581,22 @@ def test_github_generator_reviews_and_imports_prior_workflow_artifacts(
     job = document["jobs"]["check-verify"]
 
     assert job["permissions"] == {"actions": "read", "contents": "read"}
-    assert any(step.get("name") == "Review artifacts from run 42" for step in job["steps"])
+    assert any(
+        step.get("name") == "Review artifacts from run 42" for step in job["steps"]
+    )
     assert {
         "name": "Download artifacts from run 42",
-        "uses": (
-            "actions/download-artifact@"
-            "d3f86a106a0bac45b974a628896c90dbdf5c8093"
-        ),
+        "uses": ("actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093"),
         "with": {
             "pattern": "omniship-build-*",
             "path": ".omniship/imports/external-1",
             "github-token": "${{ github.token }}",
-            "repository": "0ctacity/omniship",
+            "repository": "octacity-org/omniship",
             "run-id": "42",
         },
     } in job["steps"]
     run_step = next(step for step in job["steps"] if step.get("name") == "Run Verify")
-    assert run_step["run"].endswith(
-        "--import-artifacts-root .omniship/imports"
-    )
+    assert run_step["run"].endswith("--import-artifacts-root .omniship/imports")
 
 
 def test_github_actions_uses_read_only_defaults_and_job_permission_overrides() -> None:

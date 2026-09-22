@@ -14,9 +14,9 @@ dependencies = [
     "rich>=15.0.0",
 ]
 [project.urls]
-Homepage = "https://github.com/0ctacity/omniship"
-Repository = "https://github.com/0ctacity/omniship"
-Issues = "https://github.com/0ctacity/omniship/issues"
+Homepage = "https://github.com/octacity-org/omniship"
+Repository = "https://github.com/octacity-org/omniship"
+Issues = "https://github.com/octacity-org/omniship/issues"
 
 [project.scripts]
 omniship = "omniship.cli.app:cli"

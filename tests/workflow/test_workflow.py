@@ -75,7 +75,7 @@ def test_stage_functions_compile_typed_blocks(tmp_path: Path) -> None:
 
     @pipeline.ship
     def ship(stage):
-        stage.task(GitHubRelease(repository="0ctacity/omniship", tag="v1.2.3"))
+        stage.task(GitHubRelease(repository="octacity-org/omniship", tag="v1.2.3"))
 
     config = compile_pipeline(pipeline, tmp_path / "workflow.py")
 
@@ -107,13 +107,13 @@ def test_github_tag_compiles_as_a_ship_block(tmp_path: Path) -> None:
 
     @pipeline.ship
     def ship(stage):
-        stage.task(GitHubTag(repository="0ctacity/omniship", tag="v1.2.3"))
+        stage.task(GitHubTag(repository="octacity-org/omniship", tag="v1.2.3"))
 
     config = compile_pipeline(pipeline, tmp_path / "workflow.py")
 
     assert config.ship["github-tag"].uses == "github/tag"
     assert config.ship["github-tag"].with_ == {
-        "repository": "0ctacity/omniship",
+        "repository": "octacity-org/omniship",
         "tag": "v1.2.3",
     }
 

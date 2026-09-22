@@ -8,6 +8,33 @@ from omniship.cli.app import cli
 from omniship.core.artifact import ArtifactSet
 from omniship.core.stage import Stage
 
+
+def test_external_workflow_local_run_fails_clearly(tmp_path: Path) -> None:
+    source = tmp_path / "workflow.py"
+    output = tmp_path / "omniship.yaml"
+    source.write_text(
+        "from omniship import Pipeline\n"
+        "from omniship.plugins.github import GitHubActions, GitHubExternalWorkflow\n"
+        "pipeline = Pipeline(targets=[GitHubActions()])\n"
+        "@pipeline.check\n"
+        "def check(stage):\n"
+        "    stage.task(GitHubExternalWorkflow(\n"
+        "        'octacity-org/ci/security.yml', ref='v1', name='security'\n"
+        "    ))\n",
+        encoding="utf-8",
+    )
+    runner = CliRunner()
+    generated = runner.invoke(cli, ["generate", "-f", str(source), "-o", str(output)])
+    assert generated.exit_code == 0, generated.output
+
+    executed = runner.invoke(
+        cli,
+        ["run-node", "--stage", "check", "--node", "security", "--config", str(output)],
+    )
+    assert executed.exit_code != 0
+    assert "require GitHub Actions" in executed.output
+
+
 WORKFLOW = """\
 from omniship import Pipeline
 from omniship.plugins.python import Ruff, Wheel
@@ -162,9 +189,7 @@ def test_generate_writes_valid_yaml_and_check_detects_drift(tmp_path: Path) -> N
     assert steps[1] == {
         "uses": "astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4"
     }
-    assert {
-        "run": "uvx --from omniship==0.1.0 omniship generate --check"
-    } in steps
+    assert {"run": "uvx --from omniship==0.1.0 omniship generate --check"} in steps
     assert {
         "name": "Run Ruff",
         "run": (
@@ -278,9 +303,7 @@ def test_generate_compiles_job_controls_secrets_and_caches(tmp_path: Path) -> No
 
     assert generated.exit_code == 0, generated.output
     document = yaml.load(
-        (tmp_path / ".github" / "workflows" / "build.yml").read_text(
-            encoding="utf-8"
-        ),
+        (tmp_path / ".github" / "workflows" / "build.yml").read_text(encoding="utf-8"),
         Loader=yaml.BaseLoader,
     )
     job = document["jobs"]["build-verify"]
@@ -335,9 +358,7 @@ def test_generate_compiles_external_checkout_requirements(tmp_path: Path) -> Non
 
     assert generated.exit_code == 0, generated.output
     document = yaml.load(
-        (tmp_path / ".github" / "workflows" / "check.yml").read_text(
-            encoding="utf-8"
-        ),
+        (tmp_path / ".github" / "workflows" / "check.yml").read_text(encoding="utf-8"),
         Loader=yaml.BaseLoader,
     )
     checkout = document["jobs"]["check-verify"]["steps"][2]
@@ -389,9 +410,7 @@ def test_generate_compiles_os_specific_system_packages(tmp_path: Path) -> None:
 
     assert generated.exit_code == 0, generated.output
     document = yaml.load(
-        (tmp_path / ".github" / "workflows" / "check.yml").read_text(
-            encoding="utf-8"
-        ),
+        (tmp_path / ".github" / "workflows" / "check.yml").read_text(encoding="utf-8"),
         Loader=yaml.BaseLoader,
     )
     steps = document["jobs"]["check-native"]["steps"]
@@ -549,7 +568,7 @@ def test_explicit_github_target_generates_actions_for_imperative_ship(
         "    ))\n"
         "    def release(ctx):\n"
         "        GitHub(ctx).release(\n"
-        "            repository='0ctacity/omniship',\n"
+        "            repository='octacity-org/omniship',\n"
         "            tag='v1.0.0',\n"
         "            dry_run=True,\n"
         "        )\n",
@@ -586,7 +605,7 @@ def test_generate_rejects_release_job_with_insufficient_permissions(
         "@pipeline.ship\n"
         "def ship(stage):\n"
         "    stage.task(\n"
-        "        GitHubRelease(repository='0ctacity/omniship', tag='v1.0.0'),\n"
+        "        GitHubRelease(repository='octacity-org/omniship', tag='v1.0.0'),\n"
         "        execution=github.job(permissions=GitHubPermissions(\n"
         "            contents=GitHubPermission.READ,\n"
         "        )),\n"
@@ -613,7 +632,7 @@ def test_dry_run_release_does_not_receive_write_permission(tmp_path: Path) -> No
         "@pipeline.ship\n"
         "def ship(stage):\n"
         "    stage.task(GitHubRelease(\n"
-        "        repository='0ctacity/omniship', tag='v1.0.0', dry_run=True,\n"
+        "        repository='octacity-org/omniship', tag='v1.0.0', dry_run=True,\n"
         "    ))\n",
         encoding="utf-8",
     )
@@ -826,7 +845,7 @@ def test_generate_writes_three_renameable_stage_workflows(tmp_path: Path) -> Non
         "@pipeline.ship\n"
         "def ship(stage):\n"
         "    stage.task(GitHubRelease(\n"
-        "        repository='0ctacity/omniship', tag='v1.0.0',\n"
+        "        repository='octacity-org/omniship', tag='v1.0.0',\n"
         "    ))\n",
         encoding="utf-8",
     )
@@ -999,7 +1018,7 @@ def test_manual_inputs_reach_typed_and_imperative_ship_tasks(tmp_path: Path) -> 
         "@pipeline.ship\n"
         "def ship(stage):\n"
         "    stage.task(GitHubRelease(\n"
-        "        repository='0ctacity/omniship',\n"
+        "        repository='octacity-org/omniship',\n"
         "        tag=tag, prerelease=prerelease, dry_run=True,\n"
         "    ))\n"
         "    @stage.task\n"
@@ -1123,9 +1142,7 @@ def test_generate_github_pages_deployment(tmp_path: Path) -> None:
 
     assert generated.exit_code == 0, generated.output
     ship = yaml.load(
-        (tmp_path / ".github" / "workflows" / "ship.yml").read_text(
-            encoding="utf-8"
-        ),
+        (tmp_path / ".github" / "workflows" / "ship.yml").read_text(encoding="utf-8"),
         Loader=yaml.BaseLoader,
     )
     job = ship["jobs"]["ship-github-pages"]
@@ -1181,9 +1198,7 @@ def test_generate_uses_action_versions_from_omniship_lock(tmp_path: Path) -> Non
 
     assert regenerated.exit_code == 0, regenerated.output
     check = yaml.load(
-        (tmp_path / ".github" / "workflows" / "check.yml").read_text(
-            encoding="utf-8"
-        ),
+        (tmp_path / ".github" / "workflows" / "check.yml").read_text(encoding="utf-8"),
         Loader=yaml.BaseLoader,
     )
     assert check["jobs"]["prepare"]["steps"][0] == {
@@ -1217,9 +1232,7 @@ def test_generate_uses_omniship_version_from_lock(tmp_path: Path) -> None:
 
     assert regenerated.exit_code == 0, regenerated.output
     check = yaml.load(
-        (tmp_path / ".github" / "workflows" / "check.yml").read_text(
-            encoding="utf-8"
-        ),
+        (tmp_path / ".github" / "workflows" / "check.yml").read_text(encoding="utf-8"),
         Loader=yaml.BaseLoader,
     )
     assert check["jobs"]["prepare"]["steps"][-1]["run"].startswith(

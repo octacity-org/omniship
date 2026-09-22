@@ -20,10 +20,14 @@ def test_omniship_self_release_is_generated_and_current() -> None:
     assert workflow_path.is_file()
     pipeline = load_workflow(workflow_path)
     config = compile_pipeline(pipeline, workflow_path)
+    publish = config.ship["pypi-publish"]
     release = config.ship["github-release"].with_
     project = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
 
-    assert release["repository"] == "0ctacity/omniship"
+    assert publish.with_["trusted_publishing"] is True
+    assert publish.execution.environment == "release"
+    assert config.ship["github-release"].needs == ["pypi-publish"]
+    assert release["repository"] == "octacity-org/omniship"
     assert release["tag"] == f"v{project['project']['version']}"
     assert release.get("dry_run") is None
     assert "tag=" not in workflow_path.read_text(encoding="utf-8")
@@ -49,3 +53,11 @@ def test_omniship_self_release_is_generated_and_current() -> None:
         Loader=yaml.BaseLoader,
     )
     assert actions["on"]["push"]["tags"] == ["v*"]
+    publish_job = actions["jobs"]["ship-pypi-publish"]
+    release_job = actions["jobs"]["ship-github-release"]
+    assert publish_job["environment"] == "release"
+    assert publish_job["permissions"] == {
+        "contents": "read",
+        "id-token": "write",
+    }
+    assert release_job["needs"] == "ship-pypi-publish"

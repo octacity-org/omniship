@@ -10,9 +10,29 @@ jobs:
   build:
     name: Build
     uses: ./.github/workflows/build.yml
+  ship-pypi-publish:
+    name: Ship · Pypi Publish
+    needs: build
+    permissions:
+      contents: read
+      id-token: write
+    environment: release
+    runs-on: ubuntu-24.04
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+    - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4
+    - run: uv sync --all-groups --locked
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      with:
+        pattern: omniship-build-*
+        path: .omniship/imports
+    - name: Run Pypi Publish
+      run: uv run omniship run-node --stage ship --node pypi-publish --config omniship.yaml --import-artifacts-root .omniship/imports
+      env:
+        OMNISHIP_REVISION: ${{ github.sha }}
   ship-github-release:
     name: Ship · GitHub Release
-    needs: build
+    needs: ship-pypi-publish
     permissions:
       contents: write
     runs-on: ubuntu-24.04

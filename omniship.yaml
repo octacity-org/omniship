@@ -9,9 +9,18 @@ build:
   wheel:
     uses: python/wheel
 ship:
+  pypi-publish:
+    uses: python/pypi-publish
+    with:
+      files: []
+      publish_url: null
+      trusted_publishing: true
+      dry_run: false
   github-release:
     uses: github/release
+    needs:
+    - pypi-publish
     with:
-      repository: 0ctacity/omniship
+      repository: octacity-org/omniship
       tag: v0.1.0
       generate_notes: true

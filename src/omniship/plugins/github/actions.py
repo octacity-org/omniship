@@ -158,22 +158,135 @@ class GitHubPermissions:
 
 
 @dataclass(frozen=True)
+class GitHubMatrix:
+    """Extra axes and combinations for a task's GitHub Actions job."""
+
+    axes: Mapping[str, Iterable[str | int | bool]] = field(default_factory=dict)
+    include: Iterable[Mapping[str, str | int | bool]] = ()
+    exclude: Iterable[Mapping[str, str | int | bool]] = ()
+
+    def __post_init__(self) -> None:
+        axes = {name: tuple(values) for name, values in self.axes.items()}
+        if any(
+            re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", name) is None
+            or name in {"runner", "include", "exclude"}
+            or not values
+            or any(not isinstance(value, (str, int, bool)) for value in values)
+            for name, values in axes.items()
+        ):
+            raise ValueError("GitHub matrix axes require valid names and scalar values")
+        for field_name in ("include", "exclude"):
+            combinations = tuple(dict(item) for item in getattr(self, field_name))
+            if any(
+                not item
+                or any(
+                    re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", key) is None
+                    or not isinstance(value, (str, int, bool))
+                    for key, value in item.items()
+                )
+                for item in combinations
+            ):
+                raise ValueError(
+                    f"GitHub matrix {field_name} entries must be scalar mappings"
+                )
+            object.__setattr__(self, field_name, combinations)
+        if not axes and not self.include:
+            raise ValueError("GitHub matrix requires an axis or include entries")
+        object.__setattr__(self, "axes", axes)
+
+
+@dataclass(frozen=True)
+class GitHubContainer:
+    """A job or service container on a Linux GitHub runner."""
+
+    image: str
+    env: Mapping[str, str | SecretRef] = field(default_factory=dict)
+    ports: Iterable[int | str] = ()
+    volumes: Iterable[str] = ()
+    options: str | None = None
+    credentials: Mapping[str, str | SecretRef] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.image, str) or not self.image:
+            raise ValueError("GitHub container image must be non-empty")
+        for field_name in ("env", "credentials"):
+            values = dict(getattr(self, field_name))
+            if any(
+                not isinstance(key, str)
+                or not key
+                or not isinstance(value, (str, SecretRef))
+                for key, value in values.items()
+            ):
+                raise TypeError(
+                    f"GitHub container {field_name} must map names to strings or secrets"
+                )
+            object.__setattr__(self, field_name, values)
+        ports = tuple(self.ports)
+        volumes = tuple(self.volumes)
+        if any(not isinstance(port, (int, str)) for port in ports):
+            raise TypeError("GitHub container ports must be integers or strings")
+        if any(not isinstance(volume, str) or not volume for volume in volumes):
+            raise TypeError("GitHub container volumes must be non-empty strings")
+        object.__setattr__(self, "ports", ports)
+        object.__setattr__(self, "volumes", volumes)
+
+    def to_document(self) -> dict[str, object]:
+        def render(value: str | SecretRef) -> str:
+            return (
+                f"${{{{ secrets.{value.name} }}}}"
+                if isinstance(value, SecretRef)
+                else value
+            )
+
+        document: dict[str, object] = {"image": self.image}
+        if self.env:
+            document["env"] = {key: render(value) for key, value in self.env.items()}
+        if self.ports:
+            document["ports"] = list(self.ports)
+        if self.volumes:
+            document["volumes"] = list(self.volumes)
+        if self.options is not None:
+            document["options"] = self.options
+        if self.credentials:
+            document["credentials"] = {
+                key: render(value) for key, value in self.credentials.items()
+            }
+        return document
+
+
+@dataclass(frozen=True)
 class GitHubJob:
     runners: tuple[GitHubRunner, ...]
     fail_fast: bool = False
+    max_parallel: int | None = None
     permissions: GitHubPermissions | None = None
     timeout_minutes: int | None = None
     environment: str | None = None
     working_directory: str | None = None
     shell: GitHubShell | None = None
-    env: Mapping[str, str | SecretRef] = field(default_factory=dict)
+    env: Mapping[str, str | SecretRef | _GitHubExpression] = field(default_factory=dict)
     caches: tuple[CacheSpec, ...] = ()
+    matrix: GitHubMatrix | None = None
+    container: GitHubContainer | None = None
+    services: Mapping[str, GitHubContainer] = field(default_factory=dict)
+    before_steps: tuple[GitHubActionStep, ...] = ()
+    after_steps: tuple[GitHubActionStep, ...] = ()
+    outputs: tuple[str, ...] = ()
+    environment_url: str | None = None
 
     def __post_init__(self) -> None:
         if not self.runners:
             raise ValueError("A GitHub job requires at least one runner")
         if any(not isinstance(runner, GitHubRunner) for runner in self.runners):
             raise TypeError("GitHub job runners must be GitHubRunner values")
+        if len(set(self.runners)) != len(self.runners):
+            raise ValueError("GitHub job runners must be unique")
+        if self.max_parallel is not None and (
+            not isinstance(self.max_parallel, int)
+            or isinstance(self.max_parallel, bool)
+            or self.max_parallel < 1
+        ):
+            raise ValueError("GitHub max_parallel must be a positive integer")
         if self.permissions is not None and not isinstance(
             self.permissions, GitHubPermissions
         ):
@@ -199,15 +312,59 @@ class GitHubJob:
         if any(
             not isinstance(name, str)
             or not name
-            or not isinstance(value, (str, SecretRef))
+            or not isinstance(value, (str, SecretRef, _GitHubExpression))
             for name, value in normalized_env.items()
         ):
-            raise TypeError("env must map non-empty names to strings or SecretRef values")
+            raise TypeError(
+                "env must map non-empty names to strings or GitHub references"
+            )
         normalized_caches = tuple(self.caches)
         if any(not isinstance(cache, CacheSpec) for cache in normalized_caches):
             raise TypeError("caches must contain CacheSpec values")
         object.__setattr__(self, "env", normalized_env)
         object.__setattr__(self, "caches", normalized_caches)
+        if self.matrix is not None and not isinstance(self.matrix, GitHubMatrix):
+            raise TypeError("matrix must be a GitHubMatrix value")
+        if self.matrix is not None:
+            runner_names = {runner.value for runner in self.runners}
+            if any(
+                item.get("runner") not in runner_names for item in self.matrix.include
+            ):
+                raise ValueError(
+                    "GitHub matrix include entries require a configured runner"
+                )
+        if self.container is not None and not isinstance(
+            self.container, GitHubContainer
+        ):
+            raise TypeError("container must be a GitHubContainer value")
+        services = dict(self.services)
+        if any(
+            not name or not isinstance(value, GitHubContainer)
+            for name, value in services.items()
+        ):
+            raise TypeError("services must map names to GitHubContainer values")
+        if (self.container or services) and any(
+            not runner.value.startswith("ubuntu") for runner in self.runners
+        ):
+            raise ValueError("GitHub containers require Linux runners")
+        object.__setattr__(self, "services", services)
+        for field_name in ("before_steps", "after_steps"):
+            steps = tuple(getattr(self, field_name))
+            if any(not isinstance(step, GitHubActionStep) for step in steps):
+                raise TypeError(f"{field_name} must contain GitHubActionStep values")
+            object.__setattr__(self, field_name, steps)
+        outputs = tuple(self.outputs)
+        if any(
+            re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) is None for name in outputs
+        ):
+            raise ValueError("GitHub output names must be identifiers")
+        if len(set(outputs)) != len(outputs):
+            raise ValueError("GitHub output names must be unique")
+        if outputs and (len(self.runners) > 1 or self.matrix is not None):
+            raise ValueError("GitHub job outputs require a single matrix combination")
+        object.__setattr__(self, "outputs", outputs)
+        if self.environment_url is not None and self.environment is None:
+            raise ValueError("environment_url requires an environment")
 
 
 def _normalize_trigger_values(
@@ -398,6 +555,7 @@ GitHubTrigger = GitHubPush | GitHubPullRequest | GitHubWorkflowDispatch
 @dataclass(frozen=True, slots=True)
 class _GitHubExpression:
     value: str
+    output_source: tuple[str, str, str] | None = None
 
     def render(self) -> str:
         return f"${{{{ {self.value} }}}}"
@@ -471,9 +629,17 @@ class GitHubWorkflowArtifacts:
             or isinstance(self.run_id, bool)
             or self.run_id < 1
         ):
-            raise ValueError("workflow artifact run_id must be a positive integer or input")
-        if not isinstance(self.pattern, str) or not self.pattern or "\n" in self.pattern:
-            raise ValueError("workflow artifact pattern must be a non-empty single line")
+            raise ValueError(
+                "workflow artifact run_id must be a positive integer or input"
+            )
+        if (
+            not isinstance(self.pattern, str)
+            or not self.pattern
+            or "\n" in self.pattern
+        ):
+            raise ValueError(
+                "workflow artifact pattern must be a non-empty single line"
+            )
         if self.revision is not None and not isinstance(
             self.revision, (str, GitHubStringInput)
         ):
@@ -497,6 +663,17 @@ class GitHubActionStep:
     def __post_init__(self) -> None:
         if not self.dependency or not self.name:
             raise ValueError("locked action steps require a dependency and name")
+        if (
+            "@" in self.dependency
+            and re.fullmatch(
+                r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)*@[0-9a-f]{40}",
+                self.dependency,
+            )
+            is None
+        ):
+            raise ValueError(
+                "Explicit GitHub Action references require a full commit SHA"
+            )
         object.__setattr__(self, "inputs", dict(self.inputs))
 
 
@@ -592,14 +769,22 @@ class GitHubActions:
         return _GitHubExpression("runner.arch")
 
     @staticmethod
+    def matrix(name: str) -> _GitHubExpression:
+        """Reference an axis of the current task's GitHub matrix."""
+
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", name) is None:
+            raise ValueError("GitHub matrix axis name must be an identifier")
+        return _GitHubExpression(f"matrix.{name}")
+
+    @staticmethod
     def hash_files(*patterns: str) -> _GitHubExpression:
         """Create a GitHub ``hashFiles`` expression for cache invalidation."""
 
-        if not patterns or any(not isinstance(pattern, str) or not pattern for pattern in patterns):
+        if not patterns or any(
+            not isinstance(pattern, str) or not pattern for pattern in patterns
+        ):
             raise ValueError("hash_files requires at least one non-empty pattern")
-        arguments = ", ".join(
-            f"'{pattern.replace("'", "''")}'" for pattern in patterns
-        )
+        arguments = ", ".join(f"'{pattern.replace("'", "''")}'" for pattern in patterns)
         return _GitHubExpression(f"hashFiles({arguments})")
 
     @staticmethod
@@ -684,18 +869,27 @@ class GitHubActions:
         *,
         runners: Iterable[GitHubRunner] | None = None,
         fail_fast: bool = False,
+        max_parallel: int | None = None,
         permissions: GitHubPermissions | None = None,
         timeout_minutes: int | None = None,
         environment: str | None = None,
         working_directory: str | None = None,
         shell: GitHubShell | None = None,
-        env: Mapping[str, str | SecretRef] | None = None,
+        env: Mapping[str, str | SecretRef | _GitHubExpression] | None = None,
         caches: Iterable[CacheSpec] = (),
+        matrix: GitHubMatrix | None = None,
+        container: GitHubContainer | None = None,
+        services: Mapping[str, GitHubContainer] | None = None,
+        before_steps: Iterable[GitHubActionStep] = (),
+        after_steps: Iterable[GitHubActionStep] = (),
+        outputs: Iterable[str] = (),
+        environment_url: str | None = None,
     ) -> GitHubJob:
         selected_runners = (self.default_runner,) if runners is None else tuple(runners)
         return GitHubJob(
             selected_runners,
             fail_fast=fail_fast,
+            max_parallel=max_parallel,
             permissions=permissions,
             timeout_minutes=timeout_minutes,
             environment=environment,
@@ -703,6 +897,30 @@ class GitHubActions:
             shell=shell,
             env={} if env is None else env,
             caches=tuple(caches),
+            matrix=matrix,
+            container=container,
+            services={} if services is None else services,
+            before_steps=tuple(before_steps),
+            after_steps=tuple(after_steps),
+            outputs=tuple(outputs),
+            environment_url=environment_url,
+        )
+
+    @staticmethod
+    def output(stage: Stage | str, node: str, name: str) -> _GitHubExpression:
+        """Reference a declared output of a task in the same stage."""
+
+        stage_name = stage.value if isinstance(stage, Stage) else stage
+        if stage_name not in {item.value for item in Stage}:
+            raise ValueError("GitHub output stage must be check, build, or ship")
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name) is None:
+            raise ValueError("GitHub output name must be an identifier")
+        normalized = re.sub(r"[^a-zA-Z0-9_-]+", "-", node).strip("-").lower()
+        if not normalized:
+            raise ValueError("GitHub output node cannot be empty")
+        return _GitHubExpression(
+            f"needs.{stage_name}-{normalized}.outputs.{name}",
+            output_source=(stage_name, node, name),
         )
 
 
@@ -732,14 +950,18 @@ class GitHubActionsGenerator:
         if not targets and not github_nodes:
             return ()
         actions = targets[0] if targets else GitHubActions()
-        pages_nodes = [node for node in config.ship.values() if node.uses == "github/pages"]
+        pages_nodes = [
+            node for node in config.ship.values() if node.uses == "github/pages"
+        ]
         if len(pages_nodes) > 1:
             raise ValueError("A pipeline can contain only one GitHub Pages deployment")
 
         workspace_root = source_path.parent.resolve()
         lock_path = workspace_root / LOCK_FILENAME
         action_defaults = GitHubActionLock.defaults()
-        action_lock = GitHubActionLock.load(lock_path) if lock_path.is_file() else action_defaults
+        action_lock = (
+            GitHubActionLock.load(lock_path) if lock_path.is_file() else action_defaults
+        )
         action_lock.validate_compatibility(action_defaults)
         source = source_path.resolve().relative_to(workspace_root)
         pipeline_config = config_path.resolve().relative_to(workspace_root)
@@ -808,6 +1030,35 @@ class GitHubActionsGenerator:
             terminal_job_ids: list[str] = []
             for node_name, node in nodes.items():
                 job_id = job_ids[node_name]
+                dependency_jobs = [job_ids[dependency] for dependency in node.needs]
+                if not dependency_jobs:
+                    dependency_jobs = [root_dependency]
+                if node.uses == "github/external-workflow":
+                    if node.execution is not None or node.requirements:
+                        raise ValueError(
+                            f"External workflow '{node_name}' cannot have runner placement "
+                            "or OmniShip requirements"
+                        )
+                    job: dict[str, object] = {
+                        "name": f"{stage.value.title()} · {_display_name(node_name)}",
+                        "needs": dependency_jobs[0]
+                        if len(dependency_jobs) == 1
+                        else dependency_jobs,
+                        "uses": node.with_["uses"],
+                    }
+                    if node.with_.get("inputs"):
+                        job["with"] = node.with_["inputs"]
+                    if node.with_.get("secrets"):
+                        job["secrets"] = {
+                            name: f"${{{{ secrets.{secret} }}}}"
+                            for name, secret in node.with_["secrets"].items()
+                        }
+                    if node.with_.get("permissions"):
+                        job["permissions"] = node.with_["permissions"]
+                    generated_jobs[job_id] = job
+                    if node_name not in depended_on:
+                        terminal_job_ids.append(job_id)
+                    continue
                 placement = node.execution or actions.default_job
                 if not isinstance(placement, GitHubJob):
                     raise ValueError(
@@ -817,6 +1068,29 @@ class GitHubActionsGenerator:
                     raise ValueError(
                         "GitHub Pages deployment requires exactly one runner"
                     )
+                references = list(placement.env.values())
+                for action in (*placement.before_steps, *placement.after_steps):
+                    references.extend(action.inputs.values())
+                for reference in references:
+                    if (
+                        not isinstance(reference, _GitHubExpression)
+                        or reference.output_source is None
+                    ):
+                        continue
+                    source_stage, source_node, output_name = reference.output_source
+                    producer = nodes.get(source_node)
+                    if source_stage != stage.value or source_node not in node.needs:
+                        raise ValueError(
+                            f"Node '{node_name}' must depend on output producer '{source_node}'"
+                        )
+                    producer_job = producer.execution or actions.default_job
+                    if (
+                        not isinstance(producer_job, GitHubJob)
+                        or output_name not in producer_job.outputs
+                    ):
+                        raise ValueError(
+                            f"Node '{source_node}' does not declare output '{output_name}'"
+                        )
 
                 resolved_requirements = self.registry.resolve_requirements(
                     self.name,
@@ -877,6 +1151,29 @@ class GitHubActionsGenerator:
                     dependency_jobs = [root_dependency]
 
                 steps = setup_steps()
+
+                def action_step(value: GitHubActionStep) -> dict[str, object]:
+                    step: dict[str, object] = {
+                        "name": value.name,
+                        "uses": (
+                            value.dependency
+                            if "@" in value.dependency
+                            else action_lock.reference(value.dependency)
+                        ),
+                    }
+                    if value.inputs:
+                        step["with"] = {
+                            key: (
+                                item.render()
+                                if isinstance(item, _GitHubExpression)
+                                else f"${{{{ secrets.{item.name} }}}}"
+                                if isinstance(item, SecretRef)
+                                else item
+                            )
+                            for key, item in value.inputs.items()
+                        }
+                    return step
+
                 imports_artifacts = False
                 for requirement_index, resolved in enumerate(
                     resolved_requirements,
@@ -885,13 +1182,7 @@ class GitHubActionsGenerator:
                     if isinstance(resolved, GitHubPermissions):
                         continue
                     if isinstance(resolved, GitHubActionStep):
-                        step: dict[str, object] = {
-                            "name": resolved.name,
-                            "uses": action_lock.reference(resolved.dependency),
-                        }
-                        if resolved.inputs:
-                            step["with"] = dict(resolved.inputs)
-                        steps.append(step)
+                        steps.append(action_step(resolved))
                         continue
                     if isinstance(resolved, GitHubWorkflowArtifacts):
                         run_id = _render_requirement_value(resolved.run_id)
@@ -1011,6 +1302,7 @@ class GitHubActionsGenerator:
                             "with": cache_inputs,
                         }
                     )
+                steps.extend(action_step(value) for value in placement.before_steps)
                 command = [
                     *omniship_command,
                     "run-node",
@@ -1024,6 +1316,8 @@ class GitHubActionsGenerator:
 
                 if stage == Stage.BUILD and node.needs:
                     for dependency in node.needs:
+                        if nodes[dependency].uses == "github/external-workflow":
+                            continue
                         dependency_job = job_ids[dependency]
                         steps.append(
                             {
@@ -1036,7 +1330,10 @@ class GitHubActionsGenerator:
                         )
                     imports_artifacts = True
 
-                if stage == Stage.SHIP and config.build:
+                if stage == Stage.SHIP and any(
+                    build_node.uses != "github/external-workflow"
+                    for build_node in config.build.values()
+                ):
                     steps.append(
                         {
                             "uses": action_lock.reference("download-artifact"),
@@ -1056,20 +1353,22 @@ class GitHubActionsGenerator:
                     command.extend(["--export-artifacts", export_path])
 
                 if placement.working_directory is not None:
-                    command.extend(
-                        ["--working-directory", placement.working_directory]
-                    )
+                    command.extend(["--working-directory", placement.working_directory])
 
                 run_step: dict[str, object] = {
                     "name": f"Run {_display_name(node_name)}",
                     "run": shlex.join(command),
                 }
+                if placement.outputs:
+                    run_step["id"] = "omniship"
                 if placement.shell is not None:
                     run_step["shell"] = placement.shell.value
                 step_env = {
                     name: (
                         f"${{{{ secrets.{value.name} }}}}"
                         if isinstance(value, SecretRef)
+                        else value.render()
+                        if isinstance(value, _GitHubExpression)
                         else value
                     )
                     for name, value in placement.env.items()
@@ -1078,19 +1377,21 @@ class GitHubActionsGenerator:
                     step_env["OMNISHIP_REVISION"] = "${{ github.sha }}"
                 if has_runtime_inputs:
                     step_env["OMNISHIP_INPUTS"] = "${{ toJSON(inputs) }}"
-                if node.uses in {"github/release", "github/tag"} or placement.permissions is not None:
+                if (
+                    node.uses in {"github/release", "github/tag"}
+                    or placement.permissions is not None
+                ):
                     step_env["GITHUB_TOKEN"] = "${{ github.token }}"
                 if step_env:
                     run_step["env"] = step_env
                 steps.append(run_step)
+                steps.extend(action_step(value) for value in placement.after_steps)
 
                 if node.uses == "github/pages":
                     steps.extend(
                         [
                             {
-                                "uses": action_lock.reference(
-                                    "upload-pages-artifact"
-                                ),
+                                "uses": action_lock.reference("upload-pages-artifact"),
                                 "with": {"path": PAGES_STAGING_PATH.as_posix()},
                             },
                             {
@@ -1103,7 +1404,9 @@ class GitHubActionsGenerator:
 
                 if stage == Stage.BUILD:
                     artifact_name = f"omniship-build-{job_id}"
-                    if len(placement.runners) > 1:
+                    if placement.matrix is not None:
+                        artifact_name += "-${{ strategy.job-index }}"
+                    elif len(placement.runners) > 1:
                         artifact_name += "-${{ matrix.runner }}"
                     steps.append(
                         {
@@ -1124,6 +1427,11 @@ class GitHubActionsGenerator:
                 }
                 if placement.timeout_minutes is not None:
                     job["timeout-minutes"] = placement.timeout_minutes
+                if placement.outputs:
+                    job["outputs"] = {
+                        name: f"${{{{ steps.omniship.outputs.{name} }}}}"
+                        for name in placement.outputs
+                    }
                 if job_permissions is not None:
                     job["permissions"] = job_permissions.to_document()
                 if node.uses == "github/pages":
@@ -1132,16 +1440,44 @@ class GitHubActionsGenerator:
                         "url": "${{ steps.deployment.outputs.page_url }}",
                     }
                 elif placement.environment is not None:
-                    job["environment"] = placement.environment
+                    job["environment"] = (
+                        {
+                            "name": placement.environment,
+                            "url": placement.environment_url,
+                        }
+                        if placement.environment_url is not None
+                        else placement.environment
+                    )
+                if placement.container is not None:
+                    job["container"] = placement.container.to_document()
+                if placement.services:
+                    job["services"] = {
+                        name: service.to_document()
+                        for name, service in placement.services.items()
+                    }
                 job["runs-on"] = placement.runners[0].value
                 job["steps"] = steps
-                if len(placement.runners) > 1:
+                if len(placement.runners) > 1 or placement.matrix is not None:
+                    matrix: dict[str, object] = {
+                        "runner": [runner.value for runner in placement.runners]
+                    }
+                    if placement.matrix is not None:
+                        matrix.update(
+                            {
+                                name: list(values)
+                                for name, values in placement.matrix.axes.items()
+                            }
+                        )
+                        if placement.matrix.exclude:
+                            matrix["exclude"] = list(placement.matrix.exclude)
+                        if placement.matrix.include:
+                            matrix["include"] = list(placement.matrix.include)
                     job["strategy"] = {
                         "fail-fast": placement.fail_fast,
-                        "matrix": {
-                            "runner": [runner.value for runner in placement.runners]
-                        },
+                        "matrix": matrix,
                     }
+                    if placement.max_parallel is not None:
+                        job["strategy"]["max-parallel"] = placement.max_parallel
                     job["runs-on"] = "${{ matrix.runner }}"
                 generated_jobs[job_id] = job
                 if node_name not in depended_on:

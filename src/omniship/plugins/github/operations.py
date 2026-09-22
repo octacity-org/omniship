@@ -33,6 +33,34 @@ class GithubPagesConfig(BaseModel):
     )
 
 
+class GithubExternalWorkflowConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    uses: str
+    inputs: dict[str, str | int | float | bool] = Field(default_factory=dict)
+    secrets: dict[str, str] = Field(default_factory=dict)
+    permissions: dict[str, str] = Field(default_factory=dict)
+
+
+class GithubExternalWorkflowOperation:
+    name: str = "github/external-workflow"
+    stages: frozenset[Stage] = frozenset(Stage)
+    cacheable: bool = False
+
+    async def execute(
+        self,
+        context: ExecutionContext,
+        inputs: NodeInputs,
+    ) -> NodeResult:
+        return NodeResult(
+            status=NodeStatus.FAILED,
+            error_message=(
+                "External reusable workflows require GitHub Actions; "
+                "they cannot run through OmniShip locally"
+            ),
+        )
+
+
 class GithubPagesOperation:
     name: str = "github/pages"
     stages: frozenset[Stage] = frozenset({Stage.SHIP})
@@ -261,6 +289,16 @@ def get_github_tag_definition() -> OperationDefinition:
 
 
 def register_github_plugin(registry: PluginRegistry) -> None:
+    registry.register_operation(
+        GithubExternalWorkflowOperation(),
+        OperationDefinition(
+            name=GithubExternalWorkflowOperation.name,
+            stages=GithubExternalWorkflowOperation.stages,
+            description="Call an external GitHub reusable workflow as one job",
+            config_model=GithubExternalWorkflowConfig,
+            cacheable=False,
+        ),
+    )
     registry.register_operation(
         GithubPagesOperation(),
         get_github_pages_definition(),

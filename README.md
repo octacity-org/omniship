@@ -35,7 +35,7 @@ OmniShip requires Python 3.14 or newer. This repository uses
 [uv](https://docs.astral.sh/uv/) for environments and dependency management.
 
 ```bash
-git clone https://github.com/0ctacity/omniship.git
+git clone https://github.com/octacity-org/omniship.git
 cd omniship
 uv sync --all-groups --locked
 uv run omniship --help
@@ -328,6 +328,37 @@ def check(stage):
     )
 ```
 
+For additional dimensions, use `GitHubMatrix`. Every `include` entry names a
+configured runner, so a new matrix combination always has a machine. Matrix
+values can be passed into a task through `github.matrix(...)`:
+
+```python
+from omniship.plugins.github import GitHubMatrix
+from omniship.plugins.go import Go
+
+
+@pipeline.check
+def check(stage):
+    @stage.task(
+        execution=github.job(
+            runners=[GitHubRunner.UBUNTU_24_04],
+            matrix=GitHubMatrix(axes={"profile": ["smoke", "full"]}),
+            env={"TEST_PROFILE": github.matrix("profile")},
+            max_parallel=2,
+        ),
+    )
+    def go_tests(ctx):
+        Go(ctx).test(tags=[ctx.env["TEST_PROFILE"]])
+```
+
+`github.job(...)` also accepts a `GitHubContainer`, service containers,
+`before_steps` and `after_steps` made from locked `GitHubActionStep` values,
+and an `environment_url`. A task can publish a small value to a dependent job
+by declaring `outputs=["version"]` on its job and calling
+`ctx.outputs.set("version", value)` in its imperative function. The dependent
+task must use `after=[producer]`; it can then pass
+`github.output("check", "producer", "version")` in its job environment.
+
 ### Typed triggers and inputs
 
 Triggers are configured per generated workflow. Omitting `triggers` keeps the
@@ -363,6 +394,32 @@ github = GitHubActions(
 Manual dispatch workflows can declare `GitHubStringInput` and
 `GitHubBooleanInput` values. Typed blocks bind those inputs directly;
 imperative tasks read them through `ctx.inputs`.
+
+### External reusable workflows
+
+Call a workflow from another repository as one opaque task:
+
+```python
+from omniship.plugins.github import GitHubExternalWorkflow
+
+@pipeline.check
+def check(stage):
+    security = stage.task(GitHubExternalWorkflow(
+        "octacity-org/ci/security.yml",
+        ref="v1",  # Prefer a commit SHA for an immutable version.
+        name="security",
+        inputs={"level": "strict"},
+    ))
+    stage.task(GitHubExternalWorkflow(
+        "octacity-org/ci/audit.yml", ref="v2", name="audit"
+    ), after=[security])
+```
+
+The GitHub target emits each task as a `jobs.<id>.uses` call. The referenced
+file must declare `workflow_call`; GitHub fails the job if it is missing or
+inaccessible. OmniShip does not inspect its internal jobs or run it locally.
+Unlike OmniShip build tasks, external workflows do not automatically produce
+OmniShip artifacts for downstream tasks.
 
 ### Permissions
 
@@ -462,6 +519,15 @@ def build(stage):
 
 Go target selection belongs to `GoBuild`; it is not generic runner metadata.
 Omitting `target` builds natively for the selected runner.
+
+The Go plugin also provides `GoFmt`, `GoVet`, and `GoModDownload`. `GoTest`
+supports race detection, a timeout, and build tags. `GoBuild` supports
+`cgo_enabled`, tags, linker flags, and `trimpath`; executable suffixes follow
+the requested target or native Windows runner. Output paths may use `{os}` and
+`{arch}` to give each target a distinct artifact name. `GoToolchain(cache=True)` uses
+the Go setup action's module cache, with optional `cache_dependency_path`.
+For submodules, `GoModule("bindings/go").tag("1.2.0")` produces
+`bindings/go/v1.2.0` for use with `GitHubTag`.
 
 The publisher blocks are `NpmPublish`, `PyPIPublish`, and `CargoPublish`.
 Token-based publishing reads `NODE_AUTH_TOKEN`, `UV_PUBLISH_TOKEN`, or
@@ -574,7 +640,7 @@ Current operations:
 | Rust | `rust/cargo-test`, `rust/cargo-build`, `rust/cargo-publish` |
 | Zig | `zig/test`, `zig/build` |
 | Packaging | `packaging/tar-gz`, `packaging/zip`, `packaging/sha256-manifest` |
-| GitHub | `github/release`, `github/pages`, `github/tag` |
+| GitHub | `github/release`, `github/pages`, `github/tag`, `github/external-workflow` |
 
 Inspect the installed registry with:
 

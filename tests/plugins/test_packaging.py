@@ -1,4 +1,5 @@
 import hashlib
+import stat
 import tarfile
 import zipfile
 from pathlib import Path
@@ -17,6 +18,8 @@ def test_archive_creates_reproducible_tar_gz_and_zip_artifacts(
     binary.parent.mkdir()
     binary.write_bytes(b"binary")
     binary.chmod(0o755)
+    executable = bool(binary.stat().st_mode & stat.S_IXUSR)
+    expected_mode = 0o755 if executable else 0o644
     context = TaskContext(tmp_path, {})
     archive = Archive(context)
 
@@ -44,11 +47,11 @@ def test_archive_creates_reproducible_tar_gz_and_zip_artifacts(
         member = bundle.getmember("demo")
         assert member.mtime == 0
         assert member.uid == member.gid == 0
-        assert member.mode == 0o755
+        assert member.mode == expected_mode
     with zipfile.ZipFile(zip_artifact.path) as bundle:
         info = bundle.getinfo("demo")
         assert info.date_time == (1980, 1, 1, 0, 0, 0)
-        assert info.external_attr >> 16 == 0o100755
+        assert info.external_attr >> 16 == stat.S_IFREG | expected_mode
 
 
 def test_archive_rejects_sources_outside_the_workspace(tmp_path: Path) -> None:

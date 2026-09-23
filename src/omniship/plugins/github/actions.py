@@ -3,7 +3,7 @@ import shlex
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field, fields, replace
 from enum import StrEnum
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import ClassVar
 
 import yaml
@@ -299,11 +299,11 @@ class GitHubJob:
                 raise TypeError(f"{field_name} must be a non-empty string")
         if self.working_directory is not None:
             normalized_directory = self.working_directory.replace("\\", "/")
-            directory = Path(normalized_directory)
+            directory = PurePosixPath(normalized_directory)
             if (
                 directory.is_absolute()
                 or ".." in directory.parts
-                or re.match(r"^[A-Za-z]:/", normalized_directory)
+                or PureWindowsPath(normalized_directory).drive
             ):
                 raise ValueError("working_directory must stay inside the workspace")
         if self.shell is not None and not isinstance(self.shell, GitHubShell):

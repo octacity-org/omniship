@@ -747,7 +747,7 @@ def test_github_job_rejects_invalid_timeout(timeout: int) -> None:
 
 
 @pytest.mark.parametrize(
-    "working_directory", ["../outside", "/tmp/project", "C:\\project"]
+    "working_directory", ["../outside", "/tmp/project", "C:\\project", "C:project"]
 )
 def test_github_job_rejects_working_directory_outside_workspace(
     working_directory: str,

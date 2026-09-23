@@ -1,9 +1,12 @@
 from dataclasses import dataclass
 from pathlib import Path
+from subprocess import CompletedProcess
 
 import pytest
 import yaml
+from click.testing import CliRunner
 
+from omniship.cli.app import cli
 from omniship.config.models import NodeConfig, OmniShipConfig
 from omniship.core.execution import CacheSpec, SecretRef
 from omniship.plugins.github import (
@@ -26,10 +29,16 @@ from omniship.plugins.github import (
     GitHubWorkflowDispatch,
 )
 from omniship.plugins.github.actions import GitHubActionsGenerator
+from omniship.plugins.github.dependencies import GitHubActionLock
 from omniship.plugins.registry import PluginRegistry
 from omniship.runtime import TaskContext
 from omniship.workflow.compiler import compile_pipeline
-from omniship.workflow.model import Pipeline
+from omniship.workflow.model import (
+    GitPluginPackage,
+    Pipeline,
+    PluginIndex,
+    PluginPackage,
+)
 
 
 def _generated_check_document(
@@ -173,6 +182,251 @@ def test_github_actions_bootstraps_omniship_as_an_isolated_tool_by_default(
     )
     assert task_steps[-1]["run"].startswith(
         "uvx --from omniship==0.1.0 omniship run-node"
+    )
+
+
+def test_isolated_bootstrap_installs_declared_plugins_for_prepare_and_tasks(
+    tmp_path: Path,
+) -> None:
+    pipeline = Pipeline(
+        targets=[GitHubActions()],
+        plugins=[PluginPackage("omniship-acme", "1.2.3")],
+    )
+    config = OmniShipConfig(check={"verify": NodeConfig(uses="core/noop")})
+    generated = GitHubActionsGenerator(PluginRegistry()).generate(
+        config, tmp_path / "workflow.py", tmp_path / "omniship.yaml", pipeline
+    )
+    document = yaml.safe_load(
+        next(item.content for item in generated if item.path.name == "check.yml")
+    )
+    lock = next(item.content for item in generated if item.path.name == "omniship.lock")
+    expected = "uvx --from omniship==0.1.0 --with omniship-acme==1.2.3 omniship"
+
+    assert document["jobs"]["prepare"]["steps"][-1]["run"].startswith(
+        expected + " generate"
+    )
+    assert document["jobs"]["check-verify"]["steps"][-1]["run"].startswith(
+        expected + " run-node"
+    )
+    assert '[plugins]\n"omniship-acme" = "1.2.3"' in lock
+    lock_path = tmp_path / "omniship.lock"
+    lock_path.write_text(lock, encoding="utf-8")
+    assert GitHubActionLock.load(lock_path).plugins == pipeline.plugins
+
+
+def test_plugin_package_rejects_non_exact_versions_and_duplicates() -> None:
+    with pytest.raises(ValueError, match="exact"):
+        PluginPackage("omniship-acme", ">=1.2")
+    with pytest.raises(ValueError, match="duplicate"):
+        Pipeline(
+            plugins=[
+                PluginPackage("acme-plugin", "1.0.0"),
+                PluginPackage("acme_plugin", "2.0.0"),
+            ]
+        )
+
+
+def test_private_index_plugin_uses_secret_env_in_prepare_and_task(
+    tmp_path: Path,
+) -> None:
+    plugin = PluginPackage(
+        "omniship-acme",
+        "1.2.3",
+        index=PluginIndex(
+            "acme",
+            "https://packages.example.com/simple/",
+            password=SecretRef("ACME_INDEX_TOKEN"),
+        ),
+    )
+    pipeline = Pipeline(targets=[GitHubActions()], plugins=[plugin])
+    config = OmniShipConfig(check={"verify": NodeConfig(uses="core/noop")})
+    generated = GitHubActionsGenerator(PluginRegistry()).generate(
+        config, tmp_path / "workflow.py", tmp_path / "omniship.yaml", pipeline
+    )
+    document = yaml.safe_load(
+        next(x.content for x in generated if x.path.name == "check.yml")
+    )
+    for step in (
+        document["jobs"]["prepare"]["steps"][-1],
+        document["jobs"]["check-verify"]["steps"][-1],
+    ):
+        assert "--index acme=https://packages.example.com/simple/" in step["run"]
+        assert "--with omniship-acme==1.2.3" in step["run"]
+        assert (
+            step["env"]["UV_INDEX_ACME_PASSWORD"] == "${{ secrets.ACME_INDEX_TOKEN }}"
+        )
+        assert step["env"]["UV_INDEX_ACME_USERNAME"] == "__token__"
+        assert "ACME_INDEX_TOKEN" not in step["run"]
+    lock = next(x.content for x in generated if x.path.name == "omniship.lock")
+    assert "ACME_INDEX_TOKEN" in lock and "${{" not in lock
+    lock_path = tmp_path / "omniship.lock"
+    lock_path.write_text(lock, encoding="utf-8")
+    assert GitHubActionLock.load(lock_path).plugins == (plugin,)
+
+
+def test_git_plugin_is_full_sha_pinned_in_prepare_and_task(tmp_path: Path) -> None:
+    sha = "a" * 40
+    plugin = GitPluginPackage(
+        "omniship-acme", "https://github.com/acme/omniship-acme.git", sha
+    )
+    pipeline = Pipeline(targets=[GitHubActions()], plugins=[plugin])
+    config = OmniShipConfig(check={"verify": NodeConfig(uses="core/noop")})
+    generated = GitHubActionsGenerator(PluginRegistry()).generate(
+        config, tmp_path / "workflow.py", tmp_path / "omniship.yaml", pipeline
+    )
+    document = yaml.safe_load(
+        next(x.content for x in generated if x.path.name == "check.yml")
+    )
+    for step in (
+        document["jobs"]["prepare"]["steps"][-1],
+        document["jobs"]["check-verify"]["steps"][-1],
+    ):
+        assert (
+            f"--with 'omniship-acme @ git+https://github.com/acme/omniship-acme.git@{sha}'"
+            in step["run"]
+        )
+    lock = next(x.content for x in generated if x.path.name == "omniship.lock")
+    lock_path = tmp_path / "omniship.lock"
+    lock_path.write_text(lock, encoding="utf-8")
+    assert GitHubActionLock.load(lock_path).plugins == (plugin,)
+
+
+def test_git_plugin_version_resolves_tag_once_and_uses_locked_sha(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository = "https://github.com/acme/omniship-acme.git"
+    plugin = GitPluginPackage("omniship-acme", repository, version="v1.2.3")
+    pipeline = Pipeline(targets=[GitHubActions()], plugins=[plugin])
+    config = OmniShipConfig(check={"verify": NodeConfig(uses="core/noop")})
+    commit = "b" * 40
+    calls = []
+
+    def ls_remote(command, **kwargs):
+        calls.append(command)
+        return CompletedProcess(
+            command,
+            0,
+            stdout=f"{'a' * 40}\trefs/tags/v1.2.3\n{commit}\trefs/tags/v1.2.3^{{}}\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(
+        "omniship.plugins.github.dependencies.subprocess.run", ls_remote
+    )
+    generator = GitHubActionsGenerator(PluginRegistry())
+    generated = generator.generate(
+        config, tmp_path / "workflow.py", tmp_path / "omniship.yaml", pipeline
+    )
+    lock = next(x.content for x in generated if x.path.name == "omniship.lock")
+    check = yaml.safe_load(
+        next(x.content for x in generated if x.path.name == "check.yml")
+    )
+    assert 'version = "v1.2.3"' in lock
+    assert f'commit = "{commit}"' in lock
+    assert f"@{commit}" in check["jobs"]["prepare"]["steps"][-1]["run"]
+    assert "@v1.2.3" not in check["jobs"]["prepare"]["steps"][-1]["run"]
+    assert len(calls) == 1
+
+    (tmp_path / "omniship.lock").write_text(lock, encoding="utf-8")
+    generator.generate(
+        config, tmp_path / "workflow.py", tmp_path / "omniship.yaml", pipeline
+    )
+    assert len(calls) == 1
+
+
+def test_update_plugins_refreshes_git_version_pin(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    plugin = GitPluginPackage(
+        "omniship-acme",
+        "https://github.com/acme/omniship-acme.git",
+        "a" * 40,
+        version="v1.2.3",
+    )
+    lock_path = tmp_path / "omniship.lock"
+    lock_path.write_text(
+        GitHubActionLock.defaults().with_plugins((plugin,)).render(), encoding="utf-8"
+    )
+
+    def ls_remote(command, **kwargs):
+        return CompletedProcess(
+            command, 0, stdout=f"{'b' * 40}\trefs/tags/v1.2.3\n", stderr=""
+        )
+
+    monkeypatch.setattr(
+        "omniship.plugins.github.dependencies.subprocess.run", ls_remote
+    )
+    result = CliRunner().invoke(
+        cli, ["update", "plugins", "--lock-file", str(lock_path)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert GitHubActionLock.load(lock_path).plugins == (
+        GitPluginPackage(plugin.name, plugin.repository, "b" * 40, version="v1.2.3"),
+    )
+
+
+def test_external_plugin_sources_reject_unpinned_and_credential_urls() -> None:
+    with pytest.raises(ValueError, match="HTTPS"):
+        PluginIndex(
+            "acme", "http://packages.example.com/simple/", password=SecretRef("TOKEN")
+        )
+    with pytest.raises(ValueError, match="credentials"):
+        PluginIndex(
+            "acme",
+            "https://user:pass@packages.example.com/simple/",
+            password=SecretRef("TOKEN"),
+        )
+    with pytest.raises(ValueError, match="40-character"):
+        GitPluginPackage("acme", "https://github.com/acme/plugin.git", "main")
+    with pytest.raises(ValueError, match="exact version tag"):
+        GitPluginPackage("acme", "https://github.com/acme/plugin.git", version="main")
+    with pytest.raises(ValueError, match="credentials"):
+        GitPluginPackage("acme", "https://token@github.com/acme/plugin.git", "a" * 40)
+
+
+def test_update_omniship_preserves_external_plugin_sources(tmp_path: Path) -> None:
+    plugins = (
+        PluginPackage(
+            "private-plugin",
+            "1.0.0",
+            index=PluginIndex(
+                "acme",
+                "https://packages.example.com/simple/",
+                password=SecretRef("ACME_TOKEN"),
+            ),
+        ),
+        GitPluginPackage("git-plugin", "https://github.com/acme/plugin.git", "a" * 40),
+    )
+    lock_path = tmp_path / "omniship.lock"
+    lock_path.write_text(
+        GitHubActionLock.defaults().with_plugins(plugins).render(), encoding="utf-8"
+    )
+
+    result = CliRunner().invoke(
+        cli, ["update", "omniship", "--lock-file", str(lock_path)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert GitHubActionLock.load(lock_path).plugins == plugins
+
+
+def test_update_omniship_preserves_declared_plugin_pins(tmp_path: Path) -> None:
+    lock_path = tmp_path / "omniship.lock"
+    lock_path.write_text(
+        GitHubActionLock.defaults()
+        .with_plugins((PluginPackage("omniship-acme", "1.2.3"),))
+        .render(),
+        encoding="utf-8",
+    )
+
+    result = CliRunner().invoke(
+        cli, ["update", "omniship", "--lock-file", str(lock_path)]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert GitHubActionLock.load(lock_path).plugins == (
+        PluginPackage("omniship-acme", "1.2.3"),
     )
 
 

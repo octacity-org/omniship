@@ -13,9 +13,9 @@ from omniship.core.execution import CacheSpec, SecretRef
 from omniship.core.stage import Stage
 from omniship.plugins.api import GeneratedFile
 from omniship.plugins.registry import PluginRegistry
-from omniship.workflow.model import Pipeline
+from omniship.workflow.model import GitPluginPackage, Pipeline
 
-from .dependencies import LOCK_FILENAME, GitHubActionLock
+from .dependencies import LOCK_FILENAME, GitHubActionLock, resolve_git_plugin
 from .runtime import PAGES_STAGING_PATH
 
 ARTIFACT_PATH = ".omniship/handoff"
@@ -963,18 +963,63 @@ class GitHubActionsGenerator:
             GitHubActionLock.load(lock_path) if lock_path.is_file() else action_defaults
         )
         action_lock.validate_compatibility(action_defaults)
+        locked_plugins = {plugin.name: plugin for plugin in action_lock.plugins}
+        resolved_plugins = []
+        for plugin in pipeline.plugins:
+            if (
+                isinstance(plugin, GitPluginPackage)
+                and plugin.version is not None
+                and plugin.commit is None
+            ):
+                locked = locked_plugins.get(plugin.name)
+                if (
+                    isinstance(locked, GitPluginPackage)
+                    and locked.repository == plugin.repository
+                    and locked.version == plugin.version
+                    and locked.commit is not None
+                ):
+                    plugin = locked
+                else:
+                    plugin = resolve_git_plugin(plugin)
+            resolved_plugins.append(plugin)
+        action_lock = action_lock.with_plugins(tuple(resolved_plugins))
         source = source_path.resolve().relative_to(workspace_root)
         pipeline_config = config_path.resolve().relative_to(workspace_root)
         workflow_root = workspace_root / ".github" / "workflows"
         if actions.bootstrap == GitHubBootstrap.WORKSPACE:
             omniship_command = ["uv", "run", "omniship"]
+            plugin_index_env: dict[str, str] = {}
         else:
             omniship_command = [
                 "uvx",
                 "--from",
                 f"omniship=={action_lock.omniship_version}",
-                "omniship",
             ]
+            plugin_index_env = {}
+            plugin_indexes = {}
+            for plugin in action_lock.plugins:
+                index = getattr(plugin, "index", None)
+                if index is not None:
+                    previous = plugin_indexes.get(index.name)
+                    if previous is not None and previous != index:
+                        raise ValueError(
+                            f"Conflicting plugin index definitions: {index.name}"
+                        )
+                    plugin_indexes[index.name] = index
+            for index in plugin_indexes.values():
+                omniship_command.extend(["--index", f"{index.name}={index.url}"])
+                prefix = index.env_prefix
+                if f"{prefix}_PASSWORD" in plugin_index_env:
+                    raise ValueError(
+                        f"Plugin index environment name collision: {index.name}"
+                    )
+                plugin_index_env[f"{prefix}_USERNAME"] = index.username
+                plugin_index_env[f"{prefix}_PASSWORD"] = (
+                    f"${{{{ secrets.{index.password.name} }}}}"
+                )
+            for plugin in action_lock.plugins:
+                omniship_command.extend(["--with", plugin.requirement])
+            omniship_command.append("omniship")
         generate_command = [*omniship_command, "generate"]
         if source != Path("workflow.py"):
             generate_command.extend(["--workflow-file", source.as_posix()])
@@ -992,12 +1037,15 @@ class GitHubActionsGenerator:
             return steps
 
         def prepare_job() -> dict[str, object]:
+            generate_step: dict[str, object] = {"run": shlex.join(generate_command)}
+            if plugin_index_env:
+                generate_step["env"] = dict(plugin_index_env)
             return {
                 "name": "Check · Prepare",
                 "runs-on": actions.default_runner.value,
                 "steps": [
                     *setup_steps(),
-                    {"run": shlex.join(generate_command)},
+                    generate_step,
                 ],
             }
 
@@ -1373,6 +1421,12 @@ class GitHubActionsGenerator:
                     )
                     for name, value in placement.env.items()
                 }
+                for name, value in plugin_index_env.items():
+                    if name in step_env:
+                        raise ValueError(
+                            f"Job environment conflicts with plugin index credential: {name}"
+                        )
+                    step_env[name] = value
                 if stage in {Stage.BUILD, Stage.SHIP}:
                     step_env["OMNISHIP_REVISION"] = "${{ github.sha }}"
                 if has_runtime_inputs:

@@ -7,7 +7,9 @@ from omniship.plugins.api import GeneratedFile
 from omniship.plugins.github.dependencies import (
     GitHubActionLock,
     resolve_action,
+    resolve_git_plugin,
 )
+from omniship.workflow.model import GitPluginPackage
 
 
 @click.command("update")
@@ -25,6 +27,7 @@ def update_cmd(dependency: str | None, lock_file: str) -> None:
         lock = GitHubActionLock.defaults()
         if path.is_file():
             current = GitHubActionLock.load(path)
+            lock = lock.with_plugins(current.plugins)
             if dependency not in {None, "omniship"}:
                 lock = lock.with_omniship_version(current.omniship_version)
             for pin in current.actions.values():
@@ -34,7 +37,18 @@ def update_cmd(dependency: str | None, lock_file: str) -> None:
                     and pin.major == expected.major
                 ):
                     lock = lock.with_pin(pin)
-        if dependency == "omniship":
+        if dependency in {None, "plugins"}:
+            refreshed = tuple(
+                resolve_git_plugin(plugin)
+                if isinstance(plugin, GitPluginPackage) and plugin.version is not None
+                else plugin
+                for plugin in lock.plugins
+            )
+            lock = lock.with_plugins(refreshed)
+        if dependency == "plugins":
+            selected = ()
+            click.echo("Updated Git plugin version pins")
+        elif dependency == "omniship":
             selected = ()
             click.echo(f"Updated omniship to {lock.omniship_version}")
         else:

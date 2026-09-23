@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import inspect
+import re
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Any, Protocol
+from urllib.parse import urlsplit
 
+from omniship.core.execution import SecretRef
 from omniship.core.logging import Logging
 from omniship.core.requirement import Requirement
 from omniship.core.stage import Stage
@@ -16,6 +19,121 @@ from .errors import WorkflowError
 class NodeRef:
     name: str
     stage: Stage
+
+
+@dataclass(frozen=True, slots=True)
+class PluginPackage:
+    """An exactly versioned plugin distribution needed by generated CI jobs."""
+
+    name: str
+    version: str
+    index: PluginIndex | None = None
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.name, str)
+            or re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?", self.name)
+            is None
+        ):
+            raise ValueError("Plugin package name must be a distribution name")
+        if (
+            not isinstance(self.version, str)
+            or re.fullmatch(r"[0-9][A-Za-z0-9.!+_-]*", self.version) is None
+        ):
+            raise ValueError("Plugin package version must be exact")
+        if self.index is not None and not isinstance(self.index, PluginIndex):
+            raise TypeError("Plugin package index must be a PluginIndex")
+
+    @property
+    def requirement(self) -> str:
+        return f"{self.name}=={self.version}"
+
+
+def _plugin_source_url(url: str) -> None:
+    if not isinstance(url, str):
+        raise ValueError("Plugin source must use an HTTPS URL")
+    if any(character.isspace() or ord(character) < 32 for character in url):
+        raise ValueError("Plugin source URL must not contain whitespace or controls")
+    parsed = urlsplit(url)
+    if parsed.scheme != "https" or not parsed.hostname:
+        raise ValueError("Plugin source must use an HTTPS URL")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("Plugin source URL must not contain credentials")
+    if parsed.query or parsed.fragment:
+        raise ValueError("Plugin source URL must not contain a query or fragment")
+
+
+@dataclass(frozen=True, slots=True)
+class PluginIndex:
+    """Named private package index authenticated by a CI-managed secret."""
+
+    name: str
+    url: str
+    password: SecretRef
+    username: str = "__token__"
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.name, str)
+            or re.fullmatch(r"[A-Za-z][A-Za-z0-9_-]*", self.name) is None
+        ):
+            raise ValueError(
+                "Plugin index name must contain letters, digits, '_' or '-'"
+            )
+        _plugin_source_url(self.url)
+        if not isinstance(self.password, SecretRef):
+            raise TypeError("Plugin index password must be a SecretRef")
+        if (
+            not isinstance(self.username, str)
+            or not self.username
+            or any(c in self.username for c in "\r\n")
+        ):
+            raise ValueError("Plugin index username must be a non-empty single line")
+
+    @property
+    def env_prefix(self) -> str:
+        return "UV_INDEX_" + re.sub(r"[^A-Za-z0-9]", "_", self.name).upper()
+
+
+@dataclass(frozen=True, slots=True)
+class GitPluginPackage:
+    """Git plugin selected by a commit or version tag; CI uses a locked SHA."""
+
+    name: str
+    repository: str
+    commit: str | None = None
+    version: str | None = None
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.name, str)
+            or re.fullmatch(r"[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?", self.name)
+            is None
+        ):
+            raise ValueError("Plugin package name must be a distribution name")
+        _plugin_source_url(self.repository)
+        if self.commit is None and self.version is None:
+            raise ValueError("Git plugin requires a commit or version tag")
+        if self.commit is not None and (
+            not isinstance(self.commit, str)
+            or re.fullmatch(r"[0-9a-fA-F]{40}", self.commit) is None
+        ):
+            raise ValueError("Git plugin commit must use a full 40-character SHA")
+        if self.version is not None and (
+            not isinstance(self.version, str)
+            or re.fullmatch(
+                r"v?[0-9]+(?:\.[0-9]+){2}(?:[-+][A-Za-z0-9.-]+)?",
+                self.version,
+            )
+            is None
+        ):
+            raise ValueError("Git plugin version must be an exact version tag")
+
+    @property
+    def requirement(self) -> str:
+        if self.commit is None:
+            raise ValueError("Git plugin version must be resolved to a commit")
+        return f"{self.name} @ git+{self.repository}@{self.commit}"
 
 
 @dataclass(frozen=True)
@@ -103,6 +221,7 @@ class Pipeline:
         self,
         *,
         targets: Iterable[Any] = (),
+        plugins: Iterable[PluginPackage | GitPluginPackage] = (),
         logging: Logging | None = None,
     ) -> None:
         self._entries: dict[Stage, list[BlockDeclaration | TaskDeclaration]] = {
@@ -112,6 +231,19 @@ class Pipeline:
         self._task_refs: dict[Callable[[Any], Any], NodeRef] = {}
         self._task_callables: dict[tuple[Stage, str], Callable[[Any], Any]] = {}
         self.targets = tuple(targets)
+        self.plugins = tuple(plugins)
+        if any(
+            not isinstance(plugin, (PluginPackage, GitPluginPackage))
+            for plugin in self.plugins
+        ):
+            raise TypeError(
+                "plugins must contain PluginPackage or GitPluginPackage values"
+            )
+        normalized = [
+            re.sub(r"[-_.]+", "-", plugin.name).lower() for plugin in self.plugins
+        ]
+        if len(set(normalized)) != len(normalized):
+            raise ValueError("Pipeline contains duplicate plugin packages")
         if logging is not None and not isinstance(logging, Logging):
             raise TypeError("logging must be a Logging value")
         self.logging = logging or Logging()

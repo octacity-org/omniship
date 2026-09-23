@@ -18,7 +18,9 @@ def load_workflow(path: str | Path) -> Pipeline:
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module
     try:
-        spec.loader.exec_module(module)
+        # Workflow definitions are edited and regenerated frequently. Execute
+        # the current source, not a timestamp-based cached bytecode file.
+        exec(compile(source.read_bytes(), str(source), "exec"), module.__dict__)
     except Exception as exc:
         sys.modules.pop(module_name, None)
         raise WorkflowError(f"Could not import workflow '{source}': {exc}") from exc

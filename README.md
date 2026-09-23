@@ -287,6 +287,76 @@ isolated `uvx` tool. The target repository does not need to be a Python or uv
 project; its language dependencies are installed by task requirements and
 blocks.
 
+Third-party OmniShip plugins can be installed into that same isolated tool
+environment without making the target project a Python project:
+
+```python
+from omniship import Pipeline, PluginPackage
+from omniship.plugins.github import GitHubActions
+
+pipeline = Pipeline(
+    plugins=[PluginPackage("omniship-acme", "1.2.3")],
+    targets=[GitHubActions()],
+)
+```
+
+For a private Python index, declare its HTTPS URL and a CI secret reference:
+
+```python
+from omniship import Pipeline, PluginIndex, PluginPackage
+from omniship.core.execution import SecretRef
+from omniship.plugins.github import GitHubActions
+
+pipeline = Pipeline(
+    plugins=[
+        PluginPackage(
+            "omniship-acme", "1.2.3",
+            index=PluginIndex(
+                "acme", "https://packages.example.com/simple/",
+                password=SecretRef("ACME_INDEX_TOKEN"),
+            ),
+        ),
+    ],
+    targets=[GitHubActions()],
+)
+```
+
+Set `ACME_INDEX_TOKEN` as a GitHub Actions secret. OmniShip passes it to uv as
+`UV_INDEX_ACME_PASSWORD` in Prepare and task steps; neither the token value nor
+an authenticated URL is written to `workflow.py` or `omniship.lock`. The index
+username defaults to `__token__` and can be set with `username=`. GitHub does
+not expose repository secrets to untrusted fork pull requests, so private-index
+plugins cannot run in those PRs without a separate access policy.
+
+For a plugin not yet published to a package index, select a Git repository by
+an exact version tag:
+
+```python
+from omniship import GitPluginPackage, Pipeline
+from omniship.plugins.github import GitHubActions
+
+pipeline = Pipeline(
+    plugins=[GitPluginPackage(
+        "omniship-acme",
+        "https://github.com/acme/omniship-acme.git",
+        version="v1.2.3",
+    )],
+    targets=[GitHubActions()],
+)
+```
+
+On first generation, OmniShip resolves the tag to a full commit SHA in
+`omniship.lock`. Later generations and CI use that SHA without resolving the
+tag again. Run `omniship update plugins` to refresh tag-to-commit pins, then
+regenerate the workflows. You can also skip the tag and pass a full SHA as the
+third positional argument to `GitPluginPackage`.
+
+`omniship generate` records each source in `omniship.lock` and uses the same
+source in both GitHub Prepare and task jobs. Install a plugin locally before
+generating a workflow that imports it. Git URLs must be HTTPS and contain no
+embedded credentials. These declarations pin direct plugin versions or
+revisions, not their transitive dependency graph.
+
 OmniShip itself uses the checked-out source instead of the published package:
 
 ```python

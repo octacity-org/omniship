@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 import tomllib
 import urllib.request
 from dataclasses import dataclass, replace
@@ -11,6 +12,9 @@ from importlib.metadata import version as distribution_version
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
+
+from omniship.core.execution import SecretRef
+from omniship.workflow.model import GitPluginPackage, PluginIndex, PluginPackage
 
 LOCK_VERSION = 1
 LOCK_FILENAME = "omniship.lock"
@@ -42,7 +46,9 @@ class GitHubActionPin:
                 f"GitHub Action version '{self.version}' does not match major {self.major}"
             )
         if _SHA_PATTERN.fullmatch(self.sha) is None:
-            raise ValueError("GitHub Action pin must use a full 40-character commit SHA")
+            raise ValueError(
+                "GitHub Action pin must use a full 40-character commit SHA"
+            )
 
     @property
     def reference(self) -> str:
@@ -53,6 +59,7 @@ class GitHubActionPin:
 class GitHubActionLock:
     actions: dict[str, GitHubActionPin]
     omniship_version: str
+    plugins: tuple[PluginPackage | GitPluginPackage, ...] = ()
 
     def __post_init__(self) -> None:
         if not isinstance(self.omniship_version, str) or not self.omniship_version:
@@ -95,9 +102,47 @@ class GitHubActionLock:
                 name: GitHubActionPin(name=name, **values)
                 for name, values in entries.items()
             }
-        except (TypeError, tomllib.TOMLDecodeError) as exc:
+            plugin_entries = document.get("plugins", {})
+            if not isinstance(plugin_entries, dict):
+                raise ValueError(f"Invalid plugin dependency data in {source}")
+            plugins = tuple(
+                PluginPackage(name, version) for name, version in plugin_entries.items()
+            )
+            source_entries = document.get("plugin_sources", [])
+            if not isinstance(source_entries, list):
+                raise ValueError(f"Invalid plugin source data in {source}")
+            source_plugins: list[PluginPackage | GitPluginPackage] = []
+            for entry in source_entries:
+                if not isinstance(entry, dict):
+                    raise ValueError(f"Invalid plugin source data in {source}")
+                if entry.get("type") == "index":
+                    source_plugins.append(
+                        PluginPackage(
+                            entry["name"],
+                            entry["version"],
+                            index=PluginIndex(
+                                entry["index_name"],
+                                entry["url"],
+                                password=SecretRef(entry["password_secret"]),
+                                username=entry["username"],
+                            ),
+                        )
+                    )
+                elif entry.get("type") == "git":
+                    source_plugins.append(
+                        GitPluginPackage(
+                            entry["name"],
+                            entry["repository"],
+                            entry["commit"],
+                            version=entry.get("version"),
+                        )
+                    )
+                else:
+                    raise ValueError(f"Unknown plugin source type in {source}")
+            plugins += tuple(source_plugins)
+        except (KeyError, TypeError, tomllib.TOMLDecodeError) as exc:
             raise ValueError(f"Invalid OmniShip lock file {source}: {exc}") from exc
-        return cls(actions, omniship_version)
+        return cls(actions, omniship_version, plugins)
 
     def get(self, name: str) -> GitHubActionPin:
         try:
@@ -126,10 +171,15 @@ class GitHubActionLock:
     def with_pin(self, pin: GitHubActionPin) -> GitHubActionLock:
         actions = dict(self.actions)
         actions[pin.name] = pin
-        return GitHubActionLock(actions, self.omniship_version)
+        return GitHubActionLock(actions, self.omniship_version, self.plugins)
 
     def with_omniship_version(self, version: str) -> GitHubActionLock:
-        return GitHubActionLock(dict(self.actions), version)
+        return GitHubActionLock(dict(self.actions), version, self.plugins)
+
+    def with_plugins(
+        self, plugins: tuple[PluginPackage | GitPluginPackage, ...]
+    ) -> GitHubActionLock:
+        return GitHubActionLock(dict(self.actions), self.omniship_version, plugins)
 
     def validate_compatibility(self, defaults: GitHubActionLock) -> None:
         for name, expected in defaults.actions.items():
@@ -151,6 +201,51 @@ class GitHubActionLock:
             "[omniship]",
             f"version = {json.dumps(self.omniship_version)}",
         ]
+        if self.plugins:
+            published = [
+                plugin
+                for plugin in self.plugins
+                if isinstance(plugin, PluginPackage) and plugin.index is None
+            ]
+            if published:
+                lines.extend(["", "[plugins]"])
+            for plugin in published:
+                lines.append(
+                    f"{json.dumps(plugin.name)} = {json.dumps(plugin.version)}"
+                )
+            for plugin in self.plugins:
+                if isinstance(plugin, GitPluginPackage):
+                    if plugin.commit is None:
+                        raise ValueError(
+                            f"Git plugin '{plugin.name}' has no locked commit"
+                        )
+                    lines.extend(
+                        [
+                            "",
+                            "[[plugin_sources]]",
+                            'type = "git"',
+                            f"name = {json.dumps(plugin.name)}",
+                            f"repository = {json.dumps(plugin.repository)}",
+                            f"commit = {json.dumps(plugin.commit)}",
+                        ]
+                    )
+                    if plugin.version is not None:
+                        lines.append(f"version = {json.dumps(plugin.version)}")
+                elif plugin.index is not None:
+                    index = plugin.index
+                    lines.extend(
+                        [
+                            "",
+                            "[[plugin_sources]]",
+                            'type = "index"',
+                            f"name = {json.dumps(plugin.name)}",
+                            f"version = {json.dumps(plugin.version)}",
+                            f"index_name = {json.dumps(index.name)}",
+                            f"url = {json.dumps(index.url)}",
+                            f"username = {json.dumps(index.username)}",
+                            f"password_secret = {json.dumps(index.password.name)}",
+                        ]
+                    )
         for action in self.actions.values():
             lines.extend(
                 [
@@ -165,6 +260,50 @@ class GitHubActionLock:
         return "\n".join(lines) + "\n"
 
 
+def resolve_git_plugin(plugin: GitPluginPackage) -> GitPluginPackage:
+    """Resolve an exact Git version tag, preferring an annotated tag's commit."""
+    if plugin.version is None:
+        return plugin
+    ref = f"refs/tags/{plugin.version}"
+    command = [
+        "git",
+        "ls-remote",
+        "--exit-code",
+        "--tags",
+        plugin.repository,
+        ref,
+        f"{ref}^{{}}",
+    ]
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            env={**os.environ, "GIT_TERMINAL_PROMPT": "0"},
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise ValueError(
+            f"Could not resolve Git plugin tag '{plugin.version}' for {plugin.name}"
+        ) from exc
+    if result.returncode != 0:
+        raise ValueError(
+            f"Could not resolve Git plugin tag '{plugin.version}' for {plugin.name} "
+            f"(git exit code {result.returncode})"
+        )
+    refs = {}
+    for line in result.stdout.splitlines():
+        parts = line.split("\t", 1)
+        if len(parts) == 2 and re.fullmatch(r"[0-9a-fA-F]{40}", parts[0]):
+            refs[parts[1]] = parts[0]
+    commit = refs.get(f"{ref}^{{}}") or refs.get(ref)
+    if commit is None:
+        raise ValueError(
+            f"Git plugin tag '{plugin.version}' for {plugin.name} did not resolve to a commit"
+        )
+    return replace(plugin, commit=commit)
+
+
 def resolve_action(pin: GitHubActionPin) -> GitHubActionPin:
     releases = _github_json(f"/repos/{pin.repository}/releases?per_page=100")
     candidates: list[tuple[tuple[int, int, int], str]] = []
@@ -175,17 +314,11 @@ def resolve_action(pin: GitHubActionPin) -> GitHubActionPin:
         version = _SEMVER_PATTERN.fullmatch(tag) if isinstance(tag, str) else None
         if version is None or int(version.group(1)) != pin.major:
             continue
-        candidates.append(
-            (tuple(int(part) for part in version.groups()), tag)
-        )
+        candidates.append((tuple(int(part) for part in version.groups()), tag))
     if not candidates:
-        raise ValueError(
-            f"No stable v{pin.major} release found for {pin.repository}"
-        )
+        raise ValueError(f"No stable v{pin.major} release found for {pin.repository}")
     _, version = max(candidates)
-    commit = _github_json(
-        f"/repos/{pin.repository}/commits/{quote(version, safe='')}"
-    )
+    commit = _github_json(f"/repos/{pin.repository}/commits/{quote(version, safe='')}")
     sha = commit.get("sha")
     if not isinstance(sha, str):
         raise ValueError(f"GitHub did not return a commit SHA for {pin.repository}")

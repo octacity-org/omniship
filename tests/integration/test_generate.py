@@ -9,6 +9,35 @@ from omniship.core.artifact import ArtifactSet
 from omniship.core.stage import Stage
 
 
+def test_generate_check_detects_changed_plugin_package_pin(tmp_path: Path) -> None:
+    source = tmp_path / "workflow.py"
+    output = tmp_path / "omniship.yaml"
+    definition = (
+        "from omniship import Pipeline, PluginPackage\n"
+        "from omniship.plugins.github import GitHubActions\n"
+        "pipeline = Pipeline(\n"
+        "    plugins=[PluginPackage('omniship-acme', '1.2.3')],\n"
+        "    targets=[GitHubActions()],\n"
+        ")\n"
+        "@pipeline.check\n"
+        "def check(stage):\n"
+        "    @stage.task\n"
+        "    def verify(ctx):\n"
+        "        pass\n"
+    )
+    source.write_text(definition, encoding="utf-8")
+    runner = CliRunner()
+    generated = runner.invoke(cli, ["generate", "-f", str(source), "-o", str(output)])
+    assert generated.exit_code == 0, generated.output
+
+    source.write_text(definition.replace("1.2.3", "1.2.4"), encoding="utf-8")
+    stale = runner.invoke(
+        cli, ["generate", "-f", str(source), "-o", str(output), "--check"]
+    )
+    assert stale.exit_code != 0
+    assert "omniship.lock" in stale.output
+
+
 def test_external_workflow_local_run_fails_clearly(tmp_path: Path) -> None:
     source = tmp_path / "workflow.py"
     output = tmp_path / "omniship.yaml"

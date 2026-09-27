@@ -44,11 +44,31 @@ jobs:
         - ubuntu-24.04
         - macos-15
         - windows-2025
+  check-napi-integration:
+    name: Check · Napi Integration
+    needs: prepare
+    runs-on: ubuntu-24.04
+    steps:
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+    - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4
+    - run: uv sync --all-groups --locked
+    - name: Set up Node.js
+      uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+      with:
+        package-manager-cache: false
+        node-version: 24.8.0
+    - name: Set up NAPI-RS
+      run: npm install --global @napi-rs/cli@3.0.0 --ignore-scripts
+    - name: Run Napi Integration
+      run: uv run omniship run-node --stage check --node napi-integration --config omniship.yaml
+      env:
+        OMNISHIP_TEST_NAPI_CLI: '1'
   check-complete:
     name: Check complete
     needs:
     - check-ruff
     - check-pytest
+    - check-napi-integration
     runs-on: ubuntu-24.04
     steps:
     - run: echo 'check stage complete'

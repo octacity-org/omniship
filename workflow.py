@@ -5,6 +5,8 @@ from omniship.plugins.github import (
     GitHubRelease,
     GitHubRunner,
 )
+from omniship.plugins.napi import NapiToolchain
+from omniship.plugins.node import NodeToolchain
 from omniship.plugins.python import PyPIPublish, Pytest, Ruff, Wheel
 
 github = GitHubActions(
@@ -28,6 +30,14 @@ def check(stage):
                 GitHubRunner.MACOS_15,
                 GitHubRunner.WINDOWS_2025,
             ]
+        ),
+    )
+    stage.task(
+        Pytest(name="napi-integration"),
+        requires=[NodeToolchain(version="24.8.0"), NapiToolchain(version="3.0.0")],
+        execution=github.job(
+            runners=[GitHubRunner.UBUNTU_24_04],
+            env={"OMNISHIP_TEST_NAPI_CLI": "1"},
         ),
     )
 

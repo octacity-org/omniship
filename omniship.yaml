@@ -5,6 +5,8 @@ check:
     uses: python/ruff
   pytest:
     uses: python/pytest
+  napi-integration:
+    uses: python/pytest
 build:
   wheel:
     uses: python/wheel

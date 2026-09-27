@@ -113,6 +113,7 @@ def test_package_entry_points_discover_official_plugins_separately() -> None:
         "system": "omniship.plugins.system:register_system_plugin",
         "packaging": "omniship.plugins.packaging:register_packaging_plugin",
         "node": "omniship.plugins.node:register_node_plugin",
+        "napi": "omniship.plugins.napi:register_napi_plugin",
         "bun": "omniship.plugins.bun:register_bun_plugin",
         "go": "omniship.plugins.go:register_go_plugin",
         "rust": "omniship.plugins.rust:register_rust_plugin",

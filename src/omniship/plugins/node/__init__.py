@@ -20,6 +20,7 @@ from omniship.plugins.tooling import (
     exact_version,
     relative_file,
 )
+from omniship.runtime import TaskFailure
 from omniship.workflow.errors import WorkflowError
 from omniship.workflow.model import NodeSpec
 
@@ -68,6 +69,8 @@ class Node(ToolFacade):
     def publish(
         self,
         *,
+        files: tuple[str, ...] = (),
+        from_artifacts: bool = False,
         access: Literal["public", "restricted"] | None = None,
         tag: str | None = None,
         provenance: bool = False,
@@ -76,7 +79,33 @@ class Node(ToolFacade):
     ) -> None:
         if not trusted_publishing:
             self._require_env("NODE_AUTH_TOKEN", dry_run=dry_run)
-        arguments = ["npm", "publish"]
+        if from_artifacts and files:
+            raise TaskFailure("Choose files or from_artifacts, not both")
+        if from_artifacts:
+            selected = sorted(
+                (
+                    item
+                    for item in self.context.artifacts
+                    if item.metadata.get("npm.package") == "true"
+                ),
+                key=lambda item: int(item.metadata.get("npm.order", "0")),
+            )
+            if not selected:
+                raise TaskFailure("No npm package artifacts were provided")
+            files = tuple(str(item.path) for item in selected)
+        packages = []
+        for value in files:
+            artifact = self.context.artifacts.get(value)
+            path = artifact.path if artifact else self.context.workspace / value
+            path = path.resolve()
+            if (
+                not path.is_relative_to(self.context.workspace)
+                or not path.is_file()
+                or path.suffix != ".tgz"
+            ):
+                raise TaskFailure(f"Invalid npm tarball: {value}")
+            packages.append(path)
+        arguments = []
         if access is not None:
             arguments.extend(["--access", access])
         if tag is not None:
@@ -85,7 +114,11 @@ class Node(ToolFacade):
             arguments.append("--provenance")
         if dry_run:
             arguments.append("--dry-run")
-        self._run(arguments)
+        if packages:
+            for path in packages:
+                self._run(["npm", "publish", str(path), "--ignore-scripts", *arguments])
+        else:
+            self._run(["npm", "publish", *arguments])
 
 
 @dataclass(frozen=True)
@@ -151,6 +184,8 @@ class NodeBuild:
 
 @dataclass(frozen=True)
 class NpmPublish:
+    files: tuple[str, ...] = ()
+    from_artifacts: bool = False
     access: Literal["public", "restricted"] | None = None
     tag: str | None = None
     provenance: bool = False
@@ -170,6 +205,8 @@ class NpmPublish:
                 stage,
                 "node/npm-publish",
                 {
+                    "files": list(self.files),
+                    "from_artifacts": self.from_artifacts,
                     "access": self.access,
                     "tag": self.tag,
                     "provenance": self.provenance,
@@ -201,6 +238,8 @@ class _BuildConfig(_ScriptConfig):
 
 class _PublishConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    files: tuple[str, ...] = ()
+    from_artifacts: bool = False
     access: Literal["public", "restricted"] | None = None
     tag: str | None = None
     provenance: bool = False
@@ -255,9 +294,11 @@ def _build(ctx, cfg) -> None:
 
 def _publish(ctx, cfg) -> None:
     node = Node(ctx)
-    if cfg.install:
+    if cfg.install and not cfg.files and not cfg.from_artifacts:
         node.install(clean=cfg.clean)
     node.publish(
+        files=cfg.files,
+        from_artifacts=cfg.from_artifacts,
         access=cfg.access,
         tag=cfg.tag,
         provenance=cfg.provenance,

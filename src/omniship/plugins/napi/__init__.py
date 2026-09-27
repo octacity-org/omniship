@@ -164,18 +164,22 @@ class Napi(ToolFacade):
                 raise TaskFailure("NAPI-RS artifacts contain no native binaries")
             for name, source in files.items():
                 shutil.copy2(source, binaries / name)
-            self._run(["napi", "create-npm-dirs", "--npm-dir", str(packages)])
+            # CLI 3.0.0 joins these paths to cwd rather than resolving them;
+            # absolute paths would duplicate the workspace prefix.
+            packages_arg = packages.relative_to(self.context.workspace).as_posix()
+            binaries_arg = binaries.relative_to(self.context.workspace).as_posix()
+            self._run(["napi", "create-npm-dirs", "--npm-dir", packages_arg])
             self._run(
                 [
                     "napi",
                     "artifacts",
                     "--output-dir",
-                    str(binaries),
+                    binaries_arg,
                     "--npm-dir",
-                    str(packages),
+                    packages_arg,
                 ]
             )
-            self._run(["napi", "version", "--npm-dir", str(packages)])
+            self._run(["napi", "version", "--npm-dir", packages_arg])
             platform_dirs = sorted(
                 path.parent for path in packages.glob("*/package.json")
             )

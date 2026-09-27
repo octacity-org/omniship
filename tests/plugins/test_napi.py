@@ -67,7 +67,7 @@ def test_assembly_rejects_missing_platform_binary(tmp_path, monkeypatch):
 
     def run(self, args):
         if args[1] == "create-npm-dirs":
-            directory = Path(args[-1]) / "missing-platform"
+            directory = self.context.workspace / args[-1] / "missing-platform"
             directory.mkdir()
             (directory / "package.json").write_text("{}")
         assert args[0] != "npm"
@@ -124,13 +124,22 @@ def test_assembly_validates_and_packs_platform_before_root(tmp_path, monkeypatch
     def run(self, args):
         calls.append(args)
         if args[:2] == ["napi", "create-npm-dirs"]:
-            package = Path(args[args.index("--npm-dir") + 1]) / "linux-x64-gnu"
+            npm_dir = args[args.index("--npm-dir") + 1]
+            assert not Path(npm_dir).is_absolute()
+            package = self.context.workspace / npm_dir / "linux-x64-gnu"
             package.mkdir()
             (package / "package.json").write_text(
                 json.dumps({"name": "addon-linux-x64-gnu", "version": "1.2.3"})
             )
         if args[:2] == ["napi", "artifacts"]:
-            package = Path(args[args.index("--npm-dir") + 1]) / "linux-x64-gnu"
+            npm_dir = args[args.index("--npm-dir") + 1]
+            binaries = args[args.index("--output-dir") + 1]
+            assert not Path(npm_dir).is_absolute()
+            assert not Path(binaries).is_absolute()
+            assert (
+                self.context.workspace / binaries / "addon.linux-x64-gnu.node"
+            ).is_file()
+            package = self.context.workspace / npm_dir / "linux-x64-gnu"
             (package / "addon.linux-x64-gnu.node").write_bytes(b"binary")
         if args[:2] == ["npm", "pack"]:
             assert "--ignore-scripts" in args

@@ -35,3 +35,10 @@ not transactional: if one npm publication fails, earlier versions remain publish
 The primitives follow the upstream [build](https://napi.rs/docs/cli/build),
 [assembly](https://napi.rs/docs/cli/artifacts) and
 [platform package](https://napi.rs/docs/cli/create-npm-dirs) interfaces.
+
+The dedicated `napi-integration` Check job installs CLI 3.0.0 and tests real
+assembly and npm packing, including workspaces/output directories with spaces.
+To run it locally, put `@napi-rs/cli@3.0.0` and npm on PATH and run
+`OMNISHIP_TEST_NAPI_CLI=1 uv run pytest tests/integration/test_napi_cli.py`.
+The test uses placeholder binary bytes: it verifies package contents and disabled
+lifecycle hooks, not native compilation, loading, or registry publication.

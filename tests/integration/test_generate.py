@@ -1,3 +1,4 @@
+from importlib.metadata import version
 from pathlib import Path
 
 import yaml
@@ -218,25 +219,25 @@ def test_generate_writes_valid_yaml_and_check_detects_drift(tmp_path: Path) -> N
     assert steps[1] == {
         "uses": "astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4"
     }
-    assert {"run": "uvx --from omniship==0.1.0 omniship generate --check"} in steps
+    assert {"run": f"uvx --from omniship=={version('omniship')} omniship generate --check"} in steps
     assert {
         "name": "Run Ruff",
         "run": (
-            "uvx --from omniship==0.1.0 omniship run-node "
+            f"uvx --from omniship=={version('omniship')} omniship run-node "
             "--stage check --node ruff --config omniship.yaml"
         ),
     } in lint_job["steps"]
     assert {
         "name": "Run Tests",
         "run": (
-            "uvx --from omniship==0.1.0 omniship run-node "
+            f"uvx --from omniship=={version('omniship')} omniship run-node "
             "--stage check --node tests --config omniship.yaml"
         ),
     } in test_job["steps"]
     assert {
         "name": "Run Wheel",
         "run": (
-            "uvx --from omniship==0.1.0 omniship run-node "
+            f"uvx --from omniship=={version('omniship')} omniship run-node "
             "--stage build --node wheel "
             "--config omniship.yaml --export-artifacts .omniship/handoff/build-wheel"
         ),
@@ -260,7 +261,7 @@ def test_generate_writes_valid_yaml_and_check_detects_drift(tmp_path: Path) -> N
     assert {
         "name": "Run GitHub Release",
         "run": (
-            "uvx --from omniship==0.1.0 omniship run-node "
+            f"uvx --from omniship=={version('omniship')} omniship run-node "
             "--stage ship --node github-release "
             "--config omniship.yaml --import-artifacts-root .omniship/imports"
         ),
@@ -841,7 +842,7 @@ def test_build_node_dependencies_download_predecessor_artifacts(
     assert {
         "name": "Run Package",
         "run": (
-            "uvx --from omniship==0.1.0 omniship run-node "
+            f"uvx --from omniship=={version('omniship')} omniship run-node "
             "--stage build --node package "
             "--config omniship.yaml --import-artifacts-root .omniship/imports "
             "--export-artifacts .omniship/handoff/build-package"
@@ -1248,7 +1249,7 @@ def test_generate_uses_omniship_version_from_lock(tmp_path: Path) -> None:
     lock_path = tmp_path / "omniship.lock"
     lock_path.write_text(
         lock_path.read_text(encoding="utf-8").replace(
-            '[omniship]\nversion = "0.1.0"',
+            f'[omniship]\nversion = "{version("omniship")}"',
             '[omniship]\nversion = "9.8.7"',
         ),
         encoding="utf-8",

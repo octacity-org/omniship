@@ -1,4 +1,5 @@
 from dataclasses import replace
+from importlib.metadata import version
 from pathlib import Path
 
 from click.testing import CliRunner
@@ -73,9 +74,9 @@ def test_update_refreshes_the_locked_omniship_version(tmp_path: Path) -> None:
 
     assert result.exit_code == 0, result.output
     updated = GitHubActionLock.load(lock_path)
-    assert updated.omniship_version == "0.1.0"
+    assert updated.omniship_version == version("omniship")
     assert updated.actions == original.actions
-    assert "Updated omniship to 0.1.0" in result.output
+    assert f"Updated omniship to {version('omniship')}" in result.output
 
 
 def test_update_restores_missing_actions_from_plugin_defaults(

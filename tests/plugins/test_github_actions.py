@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from importlib.metadata import version
 from pathlib import Path
 from subprocess import CompletedProcess
 
@@ -178,10 +179,10 @@ def test_github_actions_bootstraps_omniship_as_an_isolated_tool_by_default(
         step.get("run") != "uv sync --all-groups --locked" for step in task_steps
     )
     assert prepare_steps[-1]["run"].startswith(
-        "uvx --from omniship==0.1.0 omniship generate"
+        f"uvx --from omniship=={version('omniship')} omniship generate"
     )
     assert task_steps[-1]["run"].startswith(
-        "uvx --from omniship==0.1.0 omniship run-node"
+        f"uvx --from omniship=={version('omniship')} omniship run-node"
     )
 
 
@@ -200,7 +201,7 @@ def test_isolated_bootstrap_installs_declared_plugins_for_prepare_and_tasks(
         next(item.content for item in generated if item.path.name == "check.yml")
     )
     lock = next(item.content for item in generated if item.path.name == "omniship.lock")
-    expected = "uvx --from omniship==0.1.0 --with omniship-acme==1.2.3 omniship"
+    expected = f"uvx --from omniship=={version('omniship')} --with omniship-acme==1.2.3 omniship"
 
     assert document["jobs"]["prepare"]["steps"][-1]["run"].startswith(
         expected + " generate"

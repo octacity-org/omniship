@@ -83,7 +83,7 @@ class TaskArtifacts:
 
 @dataclass
 class TaskOutputs:
-    """Named values a task can expose to dependent GitHub jobs."""
+    """Named values a task can expose to dependent jobs."""
 
     output_file: str | None = None
     values: dict[str, str] = field(default_factory=dict)
@@ -152,7 +152,14 @@ class TaskContext:
         self.env = dict(env)
         self.log = TaskLog(_emit=log_sink)
         self.artifacts = TaskArtifacts(self.workspace, tuple(artifacts))
-        self.outputs = TaskOutputs(self.env.get("GITHUB_OUTPUT"))
+        output_file = self.env.get("OMNISHIP_OUTPUT")
+        reference = re.fullmatch(
+            r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)",
+            output_file or "",
+        )
+        if reference is not None:
+            output_file = self.env.get(reference.group(1) or reference.group(2))
+        self.outputs = TaskOutputs(output_file or None)
         self.inputs = dict(inputs or {})
         self.git = GitTools(self.workspace)
         self.host = host or ExecutionHost.detect()

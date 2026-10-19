@@ -609,6 +609,10 @@ def test_github_job_outputs_are_available_to_dependent_job(tmp_path: Path) -> No
     assert document["jobs"]["check-prepare"]["outputs"] == {
         "version": "${{ steps.omniship.outputs.version }}"
     }
+    assert (
+        document["jobs"]["check-prepare"]["steps"][-1]["env"]["OMNISHIP_OUTPUT"]
+        == "$GITHUB_OUTPUT"
+    )
     assert document["jobs"]["check-consume"]["steps"][-1]["env"]["VERSION"] == (
         "${{ needs.check-prepare.outputs.version }}"
     )
@@ -639,9 +643,9 @@ def test_github_output_reference_requires_a_declared_dependency(tmp_path: Path) 
         )
 
 
-def test_task_context_writes_declared_github_outputs(tmp_path: Path) -> None:
-    output_file = tmp_path / "github-output"
-    context = TaskContext(tmp_path, {"GITHUB_OUTPUT": str(output_file)})
+def test_task_context_writes_declared_omniship_outputs(tmp_path: Path) -> None:
+    output_file = tmp_path / "omniship-output"
+    context = TaskContext(tmp_path, {"OMNISHIP_OUTPUT": str(output_file)})
 
     context.outputs.set("version", "1.2.3")
     context.outputs.set("notes", "first\nsecond")
@@ -651,6 +655,63 @@ def test_task_context_writes_declared_github_outputs(tmp_path: Path) -> None:
     assert "version=1.2.3\n" in content
     assert "notes<<" in content
     assert "first\nsecond\n" in content
+
+
+def test_task_context_prefers_omniship_output_over_github_output(
+    tmp_path: Path,
+) -> None:
+    omniship_output = tmp_path / "omniship-output"
+    github_output = tmp_path / "github-output"
+    context = TaskContext(
+        tmp_path,
+        {
+            "OMNISHIP_OUTPUT": str(omniship_output),
+            "GITHUB_OUTPUT": str(github_output),
+        },
+    )
+
+    context.outputs.set("key", "val")
+    assert "key=val\n" in omniship_output.read_text(encoding="utf-8")
+    assert not github_output.exists()
+
+
+def test_task_context_resolves_github_output_variable(tmp_path: Path) -> None:
+    github_output = tmp_path / "github-output"
+    context = TaskContext(
+        tmp_path,
+        {
+            "OMNISHIP_OUTPUT": "$GITHUB_OUTPUT",
+            "GITHUB_OUTPUT": str(github_output),
+        },
+    )
+
+    context.outputs.set("key", "val")
+    assert "key=val\n" in github_output.read_text(encoding="utf-8")
+
+
+def test_task_context_resolves_custom_output_variable(tmp_path: Path) -> None:
+    custom_output = tmp_path / "custom-output"
+    context = TaskContext(
+        tmp_path,
+        {
+            "OMNISHIP_OUTPUT": "${CUSTOM_OUT}",
+            "CUSTOM_OUT": str(custom_output),
+        },
+    )
+
+    context.outputs.set("key", "val")
+    assert "key=val\n" in custom_output.read_text(encoding="utf-8")
+
+
+def test_task_context_ignores_github_output_without_omniship_output(
+    tmp_path: Path,
+) -> None:
+    github_output = tmp_path / "github-output"
+    context = TaskContext(tmp_path, {"GITHUB_OUTPUT": str(github_output)})
+
+    context.outputs.set("key", "val")
+    assert context.outputs.get("key") == "val"
+    assert not github_output.exists()
 
 
 def test_github_matrix_include_requires_configured_runner() -> None:

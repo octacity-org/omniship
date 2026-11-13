@@ -60,18 +60,56 @@ build-package:
   variables:
     OMNISHIP_REVISION: $CI_COMMIT_SHA
   script:
-  - uvx --from omniship==9.9.9 omniship run-node --stage build --node package --config omniship.yaml
+  - uvx --from omniship==9.9.9 omniship run-node --stage build --node package --config omniship.yaml --export-artifacts .omniship/handoff/build-package
+  artifacts:
+    paths:
+    - .omniship/handoff/build-package
 build-docs:
   stage: build
   needs:
   - build-package
   variables:
     OMNISHIP_REVISION: $CI_COMMIT_SHA
+    OMNISHIP_EXPECTED_ARTIFACT_REVISION: $CI_COMMIT_SHA
   script:
-  - uvx --from omniship==9.9.9 omniship run-node --stage build --node docs --config omniship.yaml
+  - uvx --from omniship==9.9.9 omniship run-node --stage build --node docs --config omniship.yaml --import-artifacts-root .omniship/handoff --export-artifacts .omniship/handoff/build-docs
+  artifacts:
+    paths:
+    - .omniship/handoff/build-docs
 build-complete:
   stage: build
   needs:
-  - build-docs
+  - job: build-docs
+    artifacts: false
   script:
   - echo 'build stage complete'
+ship-publish:
+  stage: ship
+  rules:
+  - if: $CI_COMMIT_TAG =~ /^v/
+  needs:
+  - build-complete
+  - job: build-package
+    artifacts: true
+  - job: build-docs
+    artifacts: true
+  variables:
+    OMNISHIP_REVISION: $CI_COMMIT_SHA
+    OMNISHIP_EXPECTED_ARTIFACT_REVISION: $CI_COMMIT_SHA
+  script:
+  - uvx --from omniship==9.9.9 omniship run-node --stage ship --node publish --config omniship.yaml --import-artifacts-root .omniship/handoff
+ship-announce:
+  stage: ship
+  rules:
+  - if: $CI_COMMIT_TAG =~ /^v/
+  needs:
+  - ship-publish
+  - job: build-package
+    artifacts: true
+  - job: build-docs
+    artifacts: true
+  variables:
+    OMNISHIP_REVISION: $CI_COMMIT_SHA
+    OMNISHIP_EXPECTED_ARTIFACT_REVISION: $CI_COMMIT_SHA
+  script:
+  - uvx --from omniship==9.9.9 omniship run-node --stage ship --node announce --config omniship.yaml --import-artifacts-root .omniship/handoff

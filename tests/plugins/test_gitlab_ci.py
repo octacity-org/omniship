@@ -53,7 +53,7 @@ def _document(tmp_path: Path, config: OmniShipConfig, pipeline: Pipeline) -> dic
 
 
 def _golden_config(gitlab: GitLabCI) -> OmniShipConfig:
-    """lint -> test and an independent types check, then package -> docs."""
+    """lint -> test and an independent types check, package -> docs, publish -> announce."""
 
     return OmniShipConfig(
         version=1,
@@ -79,6 +79,10 @@ def _golden_config(gitlab: GitLabCI) -> OmniShipConfig:
         build={
             "package": NodeConfig(uses="core/noop"),
             "docs": NodeConfig(uses="core/noop", needs=["package"]),
+        },
+        ship={
+            "publish": NodeConfig(uses="core/noop"),
+            "announce": NodeConfig(uses="core/noop", needs=["publish"]),
         },
     )
 
@@ -108,8 +112,52 @@ def test_golden_file_encodes_stage_barriers_and_failure_isolation() -> None:
     assert jobs["check-complete"]["needs"] == ["check-test", "check-types"]
     assert jobs["build-package"]["needs"] == ["check-complete"]
     assert jobs["build-docs"]["needs"] == ["build-package"]
-    assert jobs["build-complete"]["needs"] == ["build-docs"]
+    assert jobs["build-complete"]["needs"] == [
+        {"job": "build-docs", "artifacts": False}
+    ]
+    build_artifacts = [
+        {"job": "build-package", "artifacts": True},
+        {"job": "build-docs", "artifacts": True},
+    ]
+    assert jobs["ship-publish"]["needs"] == ["build-complete", *build_artifacts]
+    assert jobs["ship-announce"]["needs"] == ["ship-publish", *build_artifacts]
+    assert "ship-complete" not in jobs
     assert jobs["stages"] == ["check", "build", "ship"]
+
+
+def test_golden_file_hands_build_bundles_to_ship_for_version_tags() -> None:
+    jobs = yaml.safe_load(GOLDEN.read_text(encoding="utf-8"))
+
+    for name in ("package", "docs"):
+        job = jobs[f"build-{name}"]
+        assert job["artifacts"] == {"paths": [f".omniship/handoff/build-{name}"]}
+        assert job["script"][0].endswith(
+            f"--export-artifacts .omniship/handoff/build-{name}"
+        )
+    # build-docs receives build-package's bundle through ``needs``.
+    assert (
+        "--import-artifacts-root .omniship/handoff "
+        in (jobs["build-docs"]["script"][0])
+    )
+    assert "--import-artifacts-root" not in jobs["build-package"]["script"][0]
+    assert (
+        "OMNISHIP_EXPECTED_ARTIFACT_REVISION"
+        not in (jobs["build-package"]["variables"])
+    )
+
+    for name in ("publish", "announce"):
+        job = jobs[f"ship-{name}"]
+        assert job["rules"] == [{"if": "$CI_COMMIT_TAG =~ /^v/"}]
+        assert job["script"][0].endswith("--import-artifacts-root .omniship/handoff")
+        assert "--export-artifacts" not in job["script"][0]
+        assert "artifacts" not in job
+        assert job["variables"] == {
+            "OMNISHIP_REVISION": "$CI_COMMIT_SHA",
+            "OMNISHIP_EXPECTED_ARTIFACT_REVISION": "$CI_COMMIT_SHA",
+        }
+    for name, job in jobs.items():
+        if isinstance(job, dict) and job.get("stage") in {"check", "build"}:
+            assert "rules" not in job, name
 
 
 def _validate_gitlab_schema(path: Path) -> subprocess.CompletedProcess[str]:
@@ -255,13 +303,15 @@ def test_unsupported_plugin_sources_fail_generation(
         _generate(tmp_path, config, Pipeline(targets=[GitLabCI()], plugins=[plugin]))
 
 
-def test_ship_tasks_are_rejected_until_artifact_handoff_exists(
-    tmp_path: Path,
-) -> None:
+def test_ship_without_build_tasks_imports_nothing(tmp_path: Path) -> None:
     config = OmniShipConfig(version=1, ship={"publish": NodeConfig(uses="core/noop")})
 
-    with pytest.raises(ValueError, match="cannot generate Ship tasks yet"):
-        _generate(tmp_path, config, Pipeline(targets=[GitLabCI()]))
+    jobs = _document(tmp_path, config, Pipeline(targets=[GitLabCI()]))
+
+    assert jobs["build-complete"]["needs"] == ["check-complete"]
+    assert jobs["ship-publish"]["needs"] == ["build-complete"]
+    assert "--import-artifacts-root" not in jobs["ship-publish"]["script"][0]
+    assert jobs["ship-publish"]["variables"] == {"OMNISHIP_REVISION": "$CI_COMMIT_SHA"}
 
 
 def test_unprovisioned_requirements_fail_generation(tmp_path: Path) -> None:
@@ -308,6 +358,7 @@ def test_foreign_placements_owned_by_gitlab_are_rejected(tmp_path: Path) -> None
         ({"timeout_minutes": 0}, ValueError),
         ({"variables": {"1BAD": "x"}}, ValueError),
         ({"variables": {"OMNISHIP_REVISION": "x"}}, ValueError),
+        ({"variables": {"OMNISHIP_EXPECTED_ARTIFACT_REVISION": "x"}}, ValueError),
         ({"variables": {"COUNT": 3}}, TypeError),
     ],
 )

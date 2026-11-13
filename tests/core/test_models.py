@@ -271,6 +271,116 @@ def test_artifact_bundle_root_merges_parallel_build_outputs(tmp_path: Path) -> N
     assert {artifact.name for artifact in restored} == {"linux.whl", "macos.whl"}
 
 
+LINUX = ExecutionHost(OperatingSystem.LINUX, Architecture.X86_64)
+MACOS = ExecutionHost(OperatingSystem.MACOS, Architecture.ARM64)
+WINDOWS = ExecutionHost(OperatingSystem.WINDOWS, Architecture.X86_64)
+
+
+def _export_variant(
+    tmp_path: Path,
+    imports: Path,
+    bundle: str,
+    *,
+    produced_on: ExecutionHost,
+    name: str = "libzova",
+    platform: Platform | None = None,
+) -> None:
+    """Export one runner's bundle, as a matrix job would upload it."""
+
+    source = tmp_path / "sources" / bundle / name
+    source.parent.mkdir(parents=True)
+    source.write_text(bundle, encoding="utf-8")
+    export_artifacts(
+        ArtifactSet(
+            [
+                Artifact.from_path(
+                    source,
+                    provenance=ArtifactProvenance(host=produced_on),
+                    platform=platform,
+                )
+            ]
+        ),
+        imports / bundle,
+    )
+
+
+def test_execution_host_names_its_platform() -> None:
+    assert MACOS.platform is Platform.MACOS_ARM64
+    assert ExecutionHost(OperatingSystem.LINUX, Architecture.UNKNOWN).platform is None
+
+
+def test_artifact_bundle_import_keeps_the_hosts_variant(tmp_path: Path) -> None:
+    imports = tmp_path / "imports"
+    for bundle, host in (("linux", LINUX), ("macos", MACOS), ("windows", WINDOWS)):
+        _export_variant(tmp_path, imports, bundle, produced_on=host)
+
+    everything = import_artifact_bundles(imports)
+    on_macos = import_artifact_bundles(imports, host=MACOS)
+
+    assert len(everything) == 3
+    (artifact,) = on_macos
+    assert artifact.path.read_text(encoding="utf-8") == "macos"
+
+
+def test_explicit_platform_tag_overrides_the_producing_host(tmp_path: Path) -> None:
+    imports = tmp_path / "imports"
+    # Both variants are cross-built on Linux; their tags say what they are for.
+    _export_variant(tmp_path, imports, "linux", produced_on=LINUX)
+    _export_variant(
+        tmp_path,
+        imports,
+        "windows",
+        produced_on=LINUX,
+        platform=Platform.WINDOWS_X86_64,
+    )
+
+    (artifact,) = import_artifact_bundles(imports, host=WINDOWS)
+
+    assert artifact.path.read_text(encoding="utf-8") == "windows"
+
+
+def test_any_variant_serves_hosts_without_their_own(tmp_path: Path) -> None:
+    imports = tmp_path / "imports"
+    _export_variant(tmp_path, imports, "linux", produced_on=LINUX)
+    _export_variant(
+        tmp_path, imports, "portable", produced_on=MACOS, platform=Platform.ANY
+    )
+
+    (on_windows,) = import_artifact_bundles(imports, host=WINDOWS)
+    (on_linux,) = import_artifact_bundles(imports, host=LINUX)
+
+    assert on_windows.path.read_text(encoding="utf-8") == "portable"
+    assert on_linux.path.read_text(encoding="utf-8") == "linux"
+
+
+def test_import_fails_when_no_variant_fits_the_host(tmp_path: Path) -> None:
+    imports = tmp_path / "imports"
+    _export_variant(tmp_path, imports, "linux", produced_on=LINUX)
+    _export_variant(tmp_path, imports, "macos", produced_on=MACOS)
+
+    with pytest.raises(ValueError, match="none for this host \\(windows/x86_64\\)"):
+        import_artifact_bundles(imports, host=WINDOWS)
+
+
+def test_differently_named_artifacts_from_every_host_are_all_kept(
+    tmp_path: Path,
+) -> None:
+    """A task collecting each runner's own file still receives them all."""
+
+    imports = tmp_path / "imports"
+    for bundle, host in (("linux", LINUX), ("macos", MACOS)):
+        _export_variant(
+            tmp_path, imports, bundle, produced_on=host, name=f"tool-{bundle}"
+        )
+
+    restored = import_artifact_bundles(imports, host=WINDOWS)
+
+    assert sorted(artifact.name for artifact in restored) == [
+        "tool-linux",
+        "tool-macos",
+    ]
+
+
 def test_artifact_bundle_import_rejects_mixed_or_unexpected_revisions(
     tmp_path: Path,
 ) -> None:

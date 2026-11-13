@@ -32,6 +32,9 @@ DEFAULT_IMAGE = "ghcr.io/astral-sh/uv:0.13.8-python3.14-trixie-slim"
 # Build jobs export bundles to <ARTIFACT_PATH>/<job>; GitLab restores job
 # artifacts at the same path, so importers read the whole directory.
 ARTIFACT_PATH = ".omniship/handoff"
+# Check jobs hand bundles only to other Check jobs, from a separate directory
+# so Build and Ship imports can never read them.
+CHECK_ARTIFACT_PATH = ".omniship/check-handoff"
 EXPECTED_ARTIFACT_REVISION_ENV = "OMNISHIP_EXPECTED_ARTIFACT_REVISION"
 # Matches the GitHub Actions target's ``v*`` tag trigger for Ship.
 SHIP_RULE = "$CI_COMMIT_TAG =~ /^v/"
@@ -347,15 +350,23 @@ class GitLabCIGenerator:
                 job_names[dependency] for dependency in node.needs
             ] or list(root_needs)
             # GitLab downloads the artifacts of every job in ``needs``, so a
-            # Build job already has its Build dependencies' bundles.
-            imports_artifacts = stage == Stage.BUILD and bool(node.needs)
+            # Check or Build job already has its dependencies' bundles.
+            imports_artifacts = stage in {Stage.CHECK, Stage.BUILD} and bool(node.needs)
+            # Build jobs always export; a Check job only when another Check
+            # job needs its files.
+            exports_artifacts = stage == Stage.BUILD or (
+                stage == Stage.CHECK and node_name in depended_on
+            )
+            artifact_root = (
+                CHECK_ARTIFACT_PATH if stage == Stage.CHECK else ARTIFACT_PATH
+            )
             if stage == Stage.SHIP and build_jobs:
                 needs.extend({"job": name, "artifacts": True} for name in build_jobs)
                 imports_artifacts = True
             if imports_artifacts:
-                command.extend(["--import-artifacts-root", ARTIFACT_PATH])
-            export_path = f"{ARTIFACT_PATH}/{job_names[node_name]}"
-            if stage == Stage.BUILD:
+                command.extend(["--import-artifacts-root", artifact_root])
+            export_path = f"{artifact_root}/{job_names[node_name]}"
+            if exports_artifacts:
                 command.extend(["--export-artifacts", export_path])
 
             job: dict[str, object] = {"stage": stage.value}
@@ -374,7 +385,7 @@ class GitLabCIGenerator:
                 for name, value in placement.variables.items()
                 if not (isinstance(value, SecretRef) and value.name == name)
             }
-            if stage in {Stage.BUILD, Stage.SHIP}:
+            if stage != Stage.CHECK or exports_artifacts or imports_artifacts:
                 variables[REVISION_ENV] = "$CI_COMMIT_SHA"
             if imports_artifacts:
                 # Reject bundles that another commit's pipeline produced.
@@ -382,7 +393,7 @@ class GitLabCIGenerator:
             if variables:
                 job["variables"] = variables
             job["script"] = [shlex.join(command)]
-            if stage == Stage.BUILD:
+            if exports_artifacts:
                 job["artifacts"] = {"paths": [export_path]}
             jobs[job_names[node_name]] = job
             if node_name not in depended_on:

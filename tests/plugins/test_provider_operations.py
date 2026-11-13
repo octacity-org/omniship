@@ -221,6 +221,34 @@ async def test_github_release_operation_delegates_to_imperative_facade(
 
 
 @pytest.mark.asyncio
+async def test_github_release_operation_accepts_auto_prerelease(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[object] = []
+
+    def release(self: GitHub, **kwargs: object) -> GitHubReleaseResult:
+        calls.append(kwargs["prerelease"])
+        return GitHubReleaseResult("octacity-org/omniship", "v1.0.0-rc.1", "", 0)
+
+    monkeypatch.setattr(GitHub, "release", release)
+
+    result = await GithubReleaseOperation().execute(
+        ExecutionContext(workspace_root=tmp_path, stage=Stage.SHIP),
+        NodeInputs(
+            params={
+                "repository": "octacity-org/omniship",
+                "tag": "v1.0.0-rc.1",
+                "prerelease": "auto",
+            }
+        ),
+    )
+
+    assert result.is_success
+    assert calls == ["auto"]
+
+
+@pytest.mark.asyncio
 async def test_github_release_requires_environment_token(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

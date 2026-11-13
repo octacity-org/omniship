@@ -835,7 +835,7 @@ class GitHubActionStep:
 
 
 def _splits_artifacts(placement: object) -> bool:
-    """Whether a Build job uploads one handoff artifact per matrix entry."""
+    """Whether a job uploads one handoff artifact per matrix entry."""
 
     return isinstance(placement, GitHubJob) and (
         placement.matrix is not None or len(placement.runners) > 1
@@ -1556,14 +1556,22 @@ class GitHubActionsGenerator:
                     pipeline_config.as_posix(),
                 ]
 
-                if stage == Stage.BUILD and node.needs:
+                # Build tasks always export; a Check task exports only when
+                # another Check task needs its files. Check bundles are named
+                # omniship-check-*, so Ship's omniship-build-* never sees them.
+                exports_artifacts = stage == Stage.BUILD or (
+                    stage == Stage.CHECK and node_name in depended_on
+                )
+                imports_dependency_bundles = False
+                if stage in {Stage.CHECK, Stage.BUILD} and node.needs:
                     for dependency in node.needs:
+                        # External workflows upload no OmniShip bundles.
                         if nodes[dependency].uses == "github/external-workflow":
                             continue
                         dependency_job = job_ids[dependency]
                         # Exact names: a prefix glob would also match jobs such
                         # as build-app-docs when depending on build-app.
-                        dependency_pattern = f"omniship-build-{dependency_job}"
+                        dependency_pattern = f"omniship-{stage.value}-{dependency_job}"
                         if _splits_artifacts(
                             placement_for(
                                 nodes[dependency].execution, GitHubActions.name
@@ -1580,7 +1588,8 @@ class GitHubActionsGenerator:
                                 },
                             }
                         )
-                    imports_artifacts = True
+                        imports_dependency_bundles = True
+                imports_artifacts = imports_artifacts or imports_dependency_bundles
 
                 if stage == Stage.SHIP and any(
                     build_node.uses != "github/external-workflow"
@@ -1600,7 +1609,7 @@ class GitHubActionsGenerator:
                 if imports_artifacts:
                     command.extend(["--import-artifacts-root", ARTIFACT_IMPORT_PATH])
 
-                if stage == Stage.BUILD:
+                if exports_artifacts:
                     export_path = f"{ARTIFACT_PATH}/{job_id}"
                     command.extend(["--export-artifacts", export_path])
 
@@ -1633,7 +1642,11 @@ class GitHubActionsGenerator:
                     step_env[name] = value
                 step_env["OMNISHIP_REF_TYPE"] = "${{ github.ref_type }}"
                 step_env["OMNISHIP_REF_NAME"] = "${{ github.ref_name }}"
-                if stage in {Stage.BUILD, Stage.SHIP}:
+                if (
+                    stage in {Stage.BUILD, Stage.SHIP}
+                    or exports_artifacts
+                    or imports_dependency_bundles
+                ):
                     step_env["OMNISHIP_REVISION"] = "${{ github.sha }}"
                 if has_runtime_inputs:
                     step_env["OMNISHIP_INPUTS"] = "${{ toJSON(inputs) }}"
@@ -1664,9 +1677,9 @@ class GitHubActionsGenerator:
                         ]
                     )
 
-                if stage == Stage.BUILD:
+                if exports_artifacts:
                     # "." cannot occur in job ids, so it separates the suffix.
-                    artifact_name = f"omniship-build-{job_id}"
+                    artifact_name = f"omniship-{stage.value}-{job_id}"
                     if placement.matrix is not None:
                         artifact_name += ".${{ strategy.job-index }}"
                     elif len(placement.runners) > 1:

@@ -192,6 +192,9 @@ def run_node(
                     os.environ.get("OMNISHIP_EXPECTED_ARTIFACT_REVISION")
                     or context.revision
                 ),
+                # Ship collects every platform's files, for example to
+                # publish them all in one release.
+                host=None if stage == Stage.SHIP else context.host,
             )
         except Exception as exc:
             console.print(f"[bold red]Artifact Import Error:[/bold red] {exc}")

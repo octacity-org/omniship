@@ -28,6 +28,15 @@ pytestmark = pytest.mark.skipif(
 
 CONFIG = """\
 version: 1
+check:
+  compile:
+    uses: core/command
+    with:
+      run: mkdir -p out && echo lib > out/libzova
+      artifacts: [out/libzova]
+  test:
+    uses: core/noop
+    needs: [compile]
 build:
   package:
     uses: core/command
@@ -153,3 +162,20 @@ def test_ship_job_rejects_bundles_from_another_commit(
     assert result.exit_code != 0
     assert "Artifact Import Error" in result.output
     assert "expected revision" in result.output
+
+
+def test_check_job_imports_its_check_dependency_bundle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    jobs = _gitlab_jobs(tmp_path)
+    runs = tmp_path / "runs"
+    for name in ("check-compile", "check-test"):
+        result = _run_job(
+            name, jobs, runs, commit=BUILD_REVISION, monkeypatch=monkeypatch
+        )
+        assert result.exit_code == 0, result.output
+
+    handoff = runs / "check-test" / ".omniship" / "check-handoff"
+    artifacts = import_artifact_bundles(handoff, expected_revision=BUILD_REVISION)
+    assert [artifact.name for artifact in artifacts] == ["out/libzova"]

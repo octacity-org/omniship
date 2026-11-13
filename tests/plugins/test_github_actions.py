@@ -645,10 +645,12 @@ def test_github_job_outputs_are_available_to_dependent_job(tmp_path: Path) -> No
     assert document["jobs"]["check-prepare"]["outputs"] == {
         "version": "${{ steps.omniship.outputs.version }}"
     }
-    assert (
-        document["jobs"]["check-prepare"]["steps"][-1]["env"]["OMNISHIP_OUTPUT"]
-        == "$GITHUB_OUTPUT"
+    (prepare_run,) = (
+        step
+        for step in document["jobs"]["check-prepare"]["steps"]
+        if step.get("id") == "omniship"
     )
+    assert prepare_run["env"]["OMNISHIP_OUTPUT"] == "$GITHUB_OUTPUT"
     assert document["jobs"]["check-consume"]["steps"][-1]["env"]["VERSION"] == (
         "${{ needs.check-prepare.outputs.version }}"
     )

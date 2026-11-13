@@ -9,6 +9,8 @@ from enum import StrEnum
 from typing import Iterable, Mapping
 
 REVISION_ENV = "OMNISHIP_REVISION"
+REF_TYPE_ENV = "OMNISHIP_REF_TYPE"
+REF_NAME_ENV = "OMNISHIP_REF_NAME"
 
 
 @dataclass(frozen=True, slots=True)

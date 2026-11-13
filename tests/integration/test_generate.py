@@ -10,6 +10,11 @@ from omniship.core.artifact import Artifact, ArtifactSet
 from omniship.core.artifact_bundle import export_artifacts, import_artifacts
 from omniship.core.stage import Stage
 
+REF_ENV = {
+    "OMNISHIP_REF_TYPE": "${{ github.ref_type }}",
+    "OMNISHIP_REF_NAME": "${{ github.ref_name }}",
+}
+
 
 def test_generate_check_detects_changed_plugin_package_pin(tmp_path: Path) -> None:
     source = tmp_path / "workflow.py"
@@ -265,6 +270,7 @@ def test_generate_writes_valid_yaml_and_check_detects_drift(tmp_path: Path) -> N
             f"uvx --from omniship=={version('omniship')} omniship run-node "
             "--stage check --node ruff --config omniship.yaml"
         ),
+        "env": REF_ENV,
     } in lint_job["steps"]
     assert {
         "name": "Run Tests",
@@ -272,6 +278,7 @@ def test_generate_writes_valid_yaml_and_check_detects_drift(tmp_path: Path) -> N
             f"uvx --from omniship=={version('omniship')} omniship run-node "
             "--stage check --node tests --config omniship.yaml"
         ),
+        "env": REF_ENV,
     } in test_job["steps"]
     assert {
         "name": "Run Wheel",
@@ -280,7 +287,7 @@ def test_generate_writes_valid_yaml_and_check_detects_drift(tmp_path: Path) -> N
             "--stage build --node wheel "
             "--config omniship.yaml --export-artifacts .omniship/handoff/build-wheel"
         ),
-        "env": {"OMNISHIP_REVISION": "${{ github.sha }}"},
+        "env": {**REF_ENV, "OMNISHIP_REVISION": "${{ github.sha }}"},
     } in build_job["steps"]
     assert {
         "uses": "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
@@ -305,6 +312,7 @@ def test_generate_writes_valid_yaml_and_check_detects_drift(tmp_path: Path) -> N
             "--config omniship.yaml --import-artifacts-root .omniship/imports"
         ),
         "env": {
+            **REF_ENV,
             "OMNISHIP_REVISION": "${{ github.sha }}",
             "GITHUB_TOKEN": "${{ github.token }}",
         },
@@ -395,6 +403,7 @@ def test_generate_compiles_job_controls_secrets_and_caches(tmp_path: Path) -> No
     assert run_step["env"] == {
         "MODE": "strict",
         "API_TOKEN": "${{ secrets.API_TOKEN }}",
+        **REF_ENV,
         "OMNISHIP_REVISION": "${{ github.sha }}",
     }
 
@@ -749,7 +758,7 @@ def test_ship_task_without_github_permissions_does_not_receive_token(
     )
     run_step = actions["jobs"]["ship-publish"]["steps"][-1]
 
-    assert run_step["env"] == {"OMNISHIP_REVISION": "${{ github.sha }}"}
+    assert run_step["env"] == {**REF_ENV, "OMNISHIP_REVISION": "${{ github.sha }}"}
 
 
 def test_run_node_executes_only_the_selected_imperative_task(tmp_path: Path) -> None:
@@ -929,7 +938,7 @@ def test_build_node_dependencies_download_predecessor_artifacts(
             "--config omniship.yaml --import-artifacts-root .omniship/imports "
             "--export-artifacts .omniship/handoff/build-package"
         ),
-        "env": {"OMNISHIP_REVISION": "${{ github.sha }}"},
+        "env": {**REF_ENV, "OMNISHIP_REVISION": "${{ github.sha }}"},
     } in package_job["steps"]
 
 

@@ -1618,6 +1618,8 @@ class GitHubActionsGenerator:
                             f"Job environment conflicts with plugin index credential: {name}"
                         )
                     step_env[name] = value
+                step_env["OMNISHIP_REF_TYPE"] = "${{ github.ref_type }}"
+                step_env["OMNISHIP_REF_NAME"] = "${{ github.ref_name }}"
                 if stage in {Stage.BUILD, Stage.SHIP}:
                     step_env["OMNISHIP_REVISION"] = "${{ github.sha }}"
                 if has_runtime_inputs:

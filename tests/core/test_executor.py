@@ -1,11 +1,12 @@
 import asyncio
+import subprocess
 import time
 from pathlib import Path
 
 import pytest
 
 from omniship.core.context import ExecutionContext
-from omniship.core.executor import StageExecutor
+from omniship.core.executor import StageExecutor, evaluate_condition
 from omniship.core.graph import StageGraph
 from omniship.core.node import Node, NodeInputs
 from omniship.core.result import NodeResult, NodeStatus
@@ -177,6 +178,104 @@ async def test_condition_skipping(tmp_path: Path, registry: PluginRegistry):
     success = await executor.execute_stage(graph, context)
     assert success is True
     assert context.results["conditional_node"].is_skipped
+
+
+_REF_VARIABLES = (
+    "TAG",
+    "GIT_BRANCH",
+    "OMNISHIP_REF_TYPE",
+    "OMNISHIP_REF_NAME",
+    "GITHUB_TAG",
+    "GITHUB_REF_TYPE",
+    "GITHUB_REF_NAME",
+)
+
+
+@pytest.fixture
+def ref_env(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
+    for name in _REF_VARIABLES:
+        monkeypatch.delenv(name, raising=False)
+    return monkeypatch
+
+
+def test_tag_condition_reads_neutral_ref_type(
+    tmp_path: Path, ref_env: pytest.MonkeyPatch
+) -> None:
+    context = ExecutionContext(workspace_root=tmp_path, stage=Stage.SHIP)
+
+    assert evaluate_condition("tag", context) is False
+    ref_env.setenv("OMNISHIP_REF_TYPE", "branch")
+    assert evaluate_condition("tag", context) is False
+    ref_env.setenv("OMNISHIP_REF_TYPE", "tag")
+    assert evaluate_condition("tag", context) is True
+
+
+def test_tag_condition_ignores_github_variables(
+    tmp_path: Path, ref_env: pytest.MonkeyPatch
+) -> None:
+    ref_env.setenv("GITHUB_REF_TYPE", "tag")
+    ref_env.setenv("GITHUB_TAG", "v1.0.0")
+    context = ExecutionContext(workspace_root=tmp_path, stage=Stage.SHIP)
+
+    assert evaluate_condition("tag", context) is False
+
+
+def test_tag_condition_accepts_local_override(
+    tmp_path: Path, ref_env: pytest.MonkeyPatch
+) -> None:
+    ref_env.setenv("OMNISHIP_REF_TYPE", "branch")
+    ref_env.setenv("TAG", "v1.0.0")
+    context = ExecutionContext(workspace_root=tmp_path, stage=Stage.SHIP)
+
+    assert evaluate_condition("tag", context) is True
+
+
+def test_branch_condition_reads_neutral_ref_name(
+    tmp_path: Path, ref_env: pytest.MonkeyPatch
+) -> None:
+    ref_env.setenv("OMNISHIP_REF_TYPE", "branch")
+    ref_env.setenv("OMNISHIP_REF_NAME", "main")
+    context = ExecutionContext(workspace_root=tmp_path, stage=Stage.CHECK)
+
+    assert evaluate_condition({"branch": "main"}, context) is True
+    assert evaluate_condition({"branch": "release"}, context) is False
+
+
+def test_branch_condition_accepts_local_override(
+    tmp_path: Path, ref_env: pytest.MonkeyPatch
+) -> None:
+    ref_env.setenv("OMNISHIP_REF_NAME", "main")
+    ref_env.setenv("GIT_BRANCH", "release")
+    context = ExecutionContext(workspace_root=tmp_path, stage=Stage.CHECK)
+
+    assert evaluate_condition({"branch": "release"}, context) is True
+    assert evaluate_condition({"branch": "main"}, context) is False
+
+
+def test_branch_condition_falls_back_to_git(
+    tmp_path: Path, ref_env: pytest.MonkeyPatch
+) -> None:
+    ref_env.setenv("GITHUB_REF_NAME", "main")
+    for command in (
+        ["git", "init", "--quiet", "--initial-branch", "trunk"],
+        [
+            "git",
+            "-c",
+            "user.name=OmniShip",
+            "-c",
+            "user.email=omniship@example.invalid",
+            "commit",
+            "--quiet",
+            "--allow-empty",
+            "--message",
+            "initial",
+        ],
+    ):
+        subprocess.run(command, cwd=tmp_path, check=True)
+    context = ExecutionContext(workspace_root=tmp_path, stage=Stage.CHECK)
+
+    assert evaluate_condition({"branch": "trunk"}, context) is True
+    assert evaluate_condition({"branch": "main"}, context) is False
 
 
 @pytest.mark.asyncio

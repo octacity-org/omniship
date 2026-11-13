@@ -775,11 +775,12 @@ omniship plugin show github/pages
 omniship plugin template github/pages
 ```
 
-For a conventional Python package release, the bundled recipe creates the
-same Check → Build → Ship structure:
+For a conventional Python package release, the GitHub provider bundles a
+recipe that creates the same Check → Build → Ship structure and ships through
+a GitHub release:
 
 ```python
-from omniship.recipes import PythonRelease
+from omniship.plugins.github.recipes import PythonRelease
 
 pipeline = PythonRelease(repository="owner/project")
 ```

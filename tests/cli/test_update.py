@@ -6,7 +6,9 @@ from click.testing import CliRunner
 
 from omniship.cli import update as update_module
 from omniship.cli.app import cli
+from omniship.plugins.github import dependencies as github_dependencies
 from omniship.plugins.github.dependencies import GitHubActionLock
+from omniship.plugins.registry import PluginRegistry
 
 
 def test_update_refreshes_one_github_action(
@@ -22,7 +24,7 @@ def test_update_refreshes_one_github_action(
         assert pin.name == "deploy-pages"
         return replace(pin, version="v5.1.0", sha=updated_sha)
 
-    monkeypatch.setattr(update_module, "resolve_action", resolve)
+    monkeypatch.setattr(github_dependencies, "resolve_action", resolve)
 
     result = CliRunner().invoke(
         cli,
@@ -94,7 +96,7 @@ def test_update_restores_missing_actions_from_plugin_defaults(
         resolved.append(pin.name)
         return pin
 
-    monkeypatch.setattr(update_module, "resolve_action", resolve)
+    monkeypatch.setattr(github_dependencies, "resolve_action", resolve)
 
     result = CliRunner().invoke(
         cli,
@@ -105,3 +107,19 @@ def test_update_restores_missing_actions_from_plugin_defaults(
     updated = GitHubActionLock.load(lock_path)
     assert updated.get("checkout").repository == "actions/checkout"
     assert set(resolved) == set(GitHubActionLock.defaults().actions)
+
+
+def test_update_requires_a_plugin_that_manages_locks(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(update_module, "load_plugins", PluginRegistry)
+
+    result = CliRunner().invoke(
+        cli,
+        ["update", "--lock-file", str(tmp_path / "omniship.lock")],
+    )
+
+    assert result.exit_code == 1
+    assert "No installed plugin manages workflow dependency locks" in result.output
+    assert not (tmp_path / "omniship.lock").exists()

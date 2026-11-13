@@ -56,6 +56,14 @@ def test_official_plugins_have_independent_registration_boundaries() -> None:
         "github/release",
         "github/tag",
     }
+    assert [updater.name for updater in github.list_lock_updaters()] == [
+        "github/actions"
+    ]
+    assert [annotator.name for annotator in github.list_log_annotators()] == [
+        "github/actions"
+    ]
+    assert core.list_lock_updaters() == []
+    assert core.list_log_annotators() == []
 
     packaging = PluginRegistry()
     register_packaging_plugin(packaging)

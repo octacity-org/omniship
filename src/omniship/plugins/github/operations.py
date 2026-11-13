@@ -20,6 +20,8 @@ from .actions import (
     GitHubPermissions,
     GitHubWorkflowArtifacts,
 )
+from .console import GitHubLogAnnotator
+from .dependencies import GitHubLockUpdater
 from .runtime import GitHub
 
 
@@ -330,3 +332,5 @@ def register_github_plugin(registry: PluginRegistry) -> None:
         ),
     )
     registry.register_workflow_generator(GitHubActionsGenerator(registry))
+    registry.register_lock_updater(GitHubLockUpdater())
+    registry.register_log_annotator(GitHubLogAnnotator())

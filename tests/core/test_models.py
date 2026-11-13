@@ -134,6 +134,8 @@ def test_artifact_bundle_rejects_tampered_content(tmp_path: Path) -> None:
         {"metadata": []},
         {"metadata": {"kind": 42}},
         {"provenance": {"task": 42}},
+        {"platform": 42},
+        {"platform": "solaris/sparc"},
     ],
 )
 def test_artifact_bundle_rejects_malformed_manifest_fields(
@@ -153,6 +155,78 @@ def test_artifact_bundle_rejects_malformed_manifest_fields(
 
     with pytest.raises(ValueError, match="artifact manifest|provenance"):
         import_artifacts(bundle)
+
+
+@pytest.mark.parametrize(
+    ("platform", "expected"),
+    [
+        (None, None),
+        ("any", "any"),
+        ("windows/x86_64", "windows/x86_64"),
+        (ExecutionHost(OperatingSystem.MACOS, Architecture.ARM64), "macos/arm64"),
+    ],
+)
+def test_artifact_platform_tag_is_normalized(
+    tmp_path: Path, platform: object, expected: str | None
+) -> None:
+    artifact = Artifact.from_path(tmp_path / "zova.lib", platform=platform)
+
+    assert artifact.platform == expected
+
+
+@pytest.mark.parametrize(
+    "platform",
+    [
+        "",
+        "windows",
+        "Windows/x86_64",
+        "win/x86_64",
+        "linux/x86",
+        "linux/x86_64/gnu",
+        "unknown/x86_64",
+        ExecutionHost(OperatingSystem.LINUX, Architecture.UNKNOWN),
+        42,
+    ],
+)
+def test_artifact_platform_tag_rejects_unknown_platforms(
+    tmp_path: Path, platform: object
+) -> None:
+    with pytest.raises(ValueError, match="Artifact platform must be"):
+        Artifact.from_path(tmp_path / "zova.lib", platform=platform)
+
+
+def test_artifact_bundle_round_trips_platform_tags(tmp_path: Path) -> None:
+    library = tmp_path / "zova.lib"
+    library.write_bytes(b"lib")
+    docs = tmp_path / "docs.html"
+    docs.write_text("docs", encoding="utf-8")
+    plain = tmp_path / "tool"
+    plain.write_bytes(b"tool")
+    artifacts = ArtifactSet(
+        [
+            Artifact.from_path(library, platform="windows/x86_64"),
+            Artifact.from_path(docs, platform="any"),
+            Artifact.from_path(plain),
+        ]
+    )
+    bundle = tmp_path / "handoff"
+
+    manifest = export_artifacts(artifacts, bundle)
+    restored = import_artifacts(bundle)
+
+    entries = json.loads(manifest.read_text(encoding="utf-8"))["artifacts"]
+    # Untagged artifacts keep the previous manifest shape.
+    assert [entry.get("platform") for entry in entries] == [
+        "windows/x86_64",
+        "any",
+        None,
+    ]
+    assert "platform" not in entries[2]
+    assert [artifact.platform for artifact in restored] == [
+        "windows/x86_64",
+        "any",
+        None,
+    ]
 
 
 def test_artifact_bundle_round_trips_directories(tmp_path: Path) -> None:

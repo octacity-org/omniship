@@ -439,6 +439,13 @@ by declaring `outputs=["version"]` on its job and calling
 task must use `after=[producer]`; it can then pass
 `github.output("check", "producer", "version")` in its job environment.
 
+Placement is per target. When a pipeline has more than one workflow target,
+`execution=` also accepts a list with at most one placement per target, for
+example `execution=[github.job(...), other.job(...)]`. Each generator uses the
+placement that belongs to it and falls back to its own default otherwise. A
+placement for a target the pipeline does not list, or two placements for the
+same target, is rejected when the task is declared.
+
 ### Typed triggers and inputs
 
 Triggers are configured per generated workflow. Omitting `triggers` keeps the

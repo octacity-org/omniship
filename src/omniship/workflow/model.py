@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 from urllib.parse import urlsplit
 
-from omniship.core.execution import SecretRef
+from omniship.core.execution import SecretRef, execution_placements
 from omniship.core.logging import Logging
 from omniship.core.requirement import Requirement
 from omniship.core.stage import Stage
@@ -312,6 +312,7 @@ class Pipeline:
     ) -> Callable[[Any], Any]:
         ref = NodeRef(name or function.__name__.replace("_", "-"), stage)
         after_refs = tuple(self._resolve_ref(item) for item in after)
+        execution = self._validate_execution(ref, execution)
         self._entries[stage].append(
             TaskDeclaration(function, ref, after_refs, execution, tuple(requirements))
         )
@@ -330,10 +331,35 @@ class Pipeline:
     ) -> NodeRef:
         ref = NodeRef(self._block_name(block), stage)
         after_refs = tuple(self._resolve_ref(item) for item in after)
+        execution = self._validate_execution(ref, execution)
         self._entries[stage].append(
             BlockDeclaration(block, after_refs, execution, tuple(requirements))
         )
         return ref
+
+    def _validate_execution(self, ref: NodeRef, execution: Any) -> Any:
+        """Check that each placement belongs to a distinct configured target."""
+
+        configured = {getattr(target, "name", None) for target in self.targets}
+        seen: set[str] = set()
+        for placement in execution_placements(execution):
+            target = getattr(placement, "target", None)
+            if not isinstance(target, str):
+                raise WorkflowError(
+                    f"Task '{ref.name}' has an execution placement without a target"
+                )
+            if target not in configured:
+                raise WorkflowError(
+                    f"Task '{ref.name}' has an execution placement for '{target}', "
+                    "which is not a configured pipeline target"
+                )
+            if target in seen:
+                raise WorkflowError(
+                    f"Task '{ref.name}' has more than one execution placement "
+                    f"for '{target}'"
+                )
+            seen.add(target)
+        return tuple(execution) if isinstance(execution, list) else execution
 
     def _resolve_ref(self, value: NodeRef | Callable[[Any], Any]) -> NodeRef:
         if isinstance(value, NodeRef):

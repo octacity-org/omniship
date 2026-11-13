@@ -66,6 +66,42 @@ def _generated_check_document(
     return yaml.safe_load(check_file.content)
 
 
+class _OtherTarget:
+    name = "test/other"
+
+
+class _OtherJob:
+    target = "test/other"
+
+
+def test_github_selects_its_placement_among_other_targets(tmp_path: Path) -> None:
+    github = GitHubActions(default_runner=GitHubRunner.UBUNTU_24_04)
+    pipeline = Pipeline(targets=[github, _OtherTarget()])
+
+    @pipeline.check
+    def check(stage):
+        @stage.task(
+            execution=[_OtherJob(), github.job(runners=[GitHubRunner.MACOS_15])]
+        )
+        def placed(ctx):
+            pass
+
+        @stage.task(execution=_OtherJob())
+        def defaulted(ctx):
+            pass
+
+    config = compile_pipeline(pipeline, tmp_path / "workflow.py")
+    generated = GitHubActionsGenerator(PluginRegistry()).generate(
+        config, tmp_path / "workflow.py", tmp_path / "omniship.yaml", pipeline
+    )
+    document = yaml.safe_load(
+        next(item.content for item in generated if item.path.name == "check.yml")
+    )
+
+    assert document["jobs"]["check-placed"]["runs-on"] == "macos-15"
+    assert document["jobs"]["check-defaulted"]["runs-on"] == "ubuntu-24.04"
+
+
 def test_external_workflow_is_one_dependent_github_job(tmp_path: Path) -> None:
     github = GitHubActions()
     pipeline = Pipeline(targets=[github])

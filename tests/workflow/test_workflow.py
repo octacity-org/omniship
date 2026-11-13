@@ -213,6 +213,61 @@ def test_execution_placement_applies_to_blocks_and_imperative_tasks(
     assert "execution" not in serialize_config(config, source_name="workflow.py")
 
 
+class OtherTarget:
+    name = "test/other"
+
+
+class OtherJob:
+    target = "test/other"
+
+
+def test_execution_accepts_one_placement_per_target(tmp_path: Path) -> None:
+    github = GitHubActions()
+    lint_job = github.job(runners=[GitHubRunner.UBUNTU_SLIM])
+    other_job = OtherJob()
+    pipeline = Pipeline(targets=[github, OtherTarget()])
+
+    @pipeline.check
+    def check(stage):
+        stage.task(Ruff(), execution=[lint_job, other_job])
+
+    config = compile_pipeline(pipeline, tmp_path / "workflow.py")
+
+    assert config.check["ruff"].execution == (lint_job, other_job)
+
+
+def test_execution_rejects_two_placements_for_one_target() -> None:
+    github = GitHubActions()
+    pipeline = Pipeline(targets=[github])
+
+    with pytest.raises(WorkflowError, match="more than one execution placement"):
+
+        @pipeline.check
+        def check(stage):
+            stage.task(Ruff(), execution=[github.job(), github.job()])
+
+
+def test_execution_rejects_placement_for_unconfigured_target() -> None:
+    github = GitHubActions()
+    pipeline = Pipeline(targets=[github])
+
+    with pytest.raises(WorkflowError, match="'test/other'.*not a configured"):
+
+        @pipeline.check
+        def check(stage):
+            stage.task(Ruff(), execution=[github.job(), OtherJob()])
+
+
+def test_execution_rejects_placement_without_target() -> None:
+    pipeline = Pipeline(targets=[GitHubActions()])
+
+    with pytest.raises(WorkflowError, match="without a target"):
+
+        @pipeline.check
+        def check(stage):
+            stage.task(run_tests, name="test", execution=object())
+
+
 def test_requirements_apply_to_blocks_and_imperative_tasks(tmp_path: Path) -> None:
     python = ExampleRequirement("python/toolchain", "3.14")
     uv = ExampleRequirement("python/uv", "0.8")

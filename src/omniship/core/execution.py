@@ -6,11 +6,35 @@ import platform
 import re
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Iterable, Mapping
+from typing import Any, Iterable, Mapping
 
 REVISION_ENV = "OMNISHIP_REVISION"
 REF_TYPE_ENV = "OMNISHIP_REF_TYPE"
 REF_NAME_ENV = "OMNISHIP_REF_NAME"
+
+
+def execution_placements(execution: Any) -> tuple[Any, ...]:
+    """Return the per-target placements declared by a task's ``execution``.
+
+    ``execution`` is either one placement or a sequence of placements. Each
+    placement names the workflow target that owns it in its ``target``
+    attribute, so one task can carry placement for several CI providers.
+    """
+
+    if execution is None:
+        return ()
+    if isinstance(execution, (list, tuple)):
+        return tuple(execution)
+    return (execution,)
+
+
+def placement_for(execution: Any, target: str) -> Any | None:
+    """Return the placement in ``execution`` owned by ``target``, if any."""
+
+    for placement in execution_placements(execution):
+        if getattr(placement, "target", None) == target:
+            return placement
+    return None
 
 
 @dataclass(frozen=True, slots=True)

@@ -11,7 +11,7 @@ from typing import ClassVar, Self
 import yaml
 
 from omniship.config.models import NodeConfig, OmniShipConfig
-from omniship.core.execution import CacheSpec, SecretRef
+from omniship.core.execution import CacheSpec, SecretRef, placement_for
 from omniship.core.stage import Stage
 from omniship.plugins.api import GeneratedFile
 from omniship.plugins.registry import PluginRegistry
@@ -259,6 +259,7 @@ class GitHubContainer:
 
 @dataclass(frozen=True)
 class GitHubJob:
+    target: ClassVar[str] = "github/actions"
     runners: tuple[GitHubRunner, ...]
     fail_fast: bool = False
     max_parallel: int | None = None
@@ -1266,7 +1267,10 @@ class GitHubActionsGenerator:
                 if not dependency_jobs:
                     dependency_jobs = [root_dependency]
                 if node.uses == "github/external-workflow":
-                    if node.execution is not None or node.requirements:
+                    if (
+                        placement_for(node.execution, GitHubActions.name) is not None
+                        or node.requirements
+                    ):
                         raise ValueError(
                             f"External workflow '{node_name}' cannot have runner placement "
                             "or OmniShip requirements"
@@ -1291,7 +1295,10 @@ class GitHubActionsGenerator:
                     if node_name not in depended_on:
                         terminal_job_ids.append(job_id)
                     continue
-                placement = node.execution or actions.default_job
+                placement = (
+                    placement_for(node.execution, GitHubActions.name)
+                    or actions.default_job
+                )
                 if not isinstance(placement, GitHubJob):
                     raise ValueError(
                         f"Node '{node_name}' has execution metadata that is not a GitHub job"
@@ -1315,7 +1322,10 @@ class GitHubActionsGenerator:
                         raise ValueError(
                             f"Node '{node_name}' must depend on output producer '{source_node}'"
                         )
-                    producer_job = producer.execution or actions.default_job
+                    producer_job = (
+                        placement_for(producer.execution, GitHubActions.name)
+                        or actions.default_job
+                    )
                     if (
                         not isinstance(producer_job, GitHubJob)
                         or output_name not in producer_job.outputs
@@ -1555,7 +1565,10 @@ class GitHubActionsGenerator:
                         # as build-app-docs when depending on build-app.
                         dependency_pattern = f"omniship-build-{dependency_job}"
                         if _splits_artifacts(
-                            nodes[dependency].execution or actions.default_job
+                            placement_for(
+                                nodes[dependency].execution, GitHubActions.name
+                            )
+                            or actions.default_job
                         ):
                             dependency_pattern += ".*"
                         steps.append(

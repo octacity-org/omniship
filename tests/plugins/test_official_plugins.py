@@ -118,6 +118,7 @@ def test_package_entry_points_discover_official_plugins_separately() -> None:
         "core": "omniship.operations:register_core_plugin",
         "python": "omniship.plugins.python:register_python_plugin",
         "github": "omniship.plugins.github:register_github_plugin",
+        "gitlab": "omniship.plugins.gitlab:register_gitlab_plugin",
         "system": "omniship.plugins.system:register_system_plugin",
         "packaging": "omniship.plugins.packaging:register_packaging_plugin",
         "node": "omniship.plugins.node:register_node_plugin",

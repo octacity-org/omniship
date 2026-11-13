@@ -58,7 +58,11 @@ def run_pipeline(
     except RuntimeInputError as exc:
         console.print(f"[bold red]Input Error:[/bold red] {exc}")
         return 1
-    ui = TerminalUI(console=console, logging=config.logging)
+    ui = TerminalUI(
+        console=console,
+        logging=config.logging,
+        annotators=registry.list_log_annotators(),
+    )
     context = ExecutionContext(
         workspace_root=workspace_root,
         stage=stages_to_run[0],
@@ -164,7 +168,11 @@ def run_node(
     except RuntimeInputError as exc:
         console.print(f"[bold red]Input Error:[/bold red] {exc}")
         return 1
-    ui = TerminalUI(console=console, logging=config.logging)
+    ui = TerminalUI(
+        console=console,
+        logging=config.logging,
+        annotators=registry.list_log_annotators(),
+    )
     context = ExecutionContext(
         workspace_root=workspace_root,
         stage=stage,

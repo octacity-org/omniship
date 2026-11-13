@@ -1,7 +1,12 @@
 from collections.abc import Callable, Iterable
 from typing import Any
 
-from omniship.plugins.api import Operation, WorkflowGenerator
+from omniship.plugins.api import (
+    LockUpdater,
+    LogAnnotator,
+    Operation,
+    WorkflowGenerator,
+)
 from omniship.plugins.metadata import OperationDefinition
 
 
@@ -14,6 +19,8 @@ class PluginRegistry:
         self._operations: dict[str, Operation] = {}
         self._definitions: dict[str, OperationDefinition] = {}
         self._workflow_generators: dict[str, WorkflowGenerator] = {}
+        self._lock_updaters: dict[str, LockUpdater] = {}
+        self._log_annotators: dict[str, LogAnnotator] = {}
         self._requirement_resolvers: dict[
             tuple[str, type[Any]], Callable[[Any], Any]
         ] = {}
@@ -53,6 +60,18 @@ class PluginRegistry:
 
     def list_workflow_generators(self) -> list[WorkflowGenerator]:
         return list(self._workflow_generators.values())
+
+    def register_lock_updater(self, updater: LockUpdater) -> None:
+        self._lock_updaters[updater.name] = updater
+
+    def list_lock_updaters(self) -> list[LockUpdater]:
+        return list(self._lock_updaters.values())
+
+    def register_log_annotator(self, annotator: LogAnnotator) -> None:
+        self._log_annotators[annotator.name] = annotator
+
+    def list_log_annotators(self) -> list[LogAnnotator]:
+        return list(self._log_annotators.values())
 
     def register_requirement_resolver(
         self,

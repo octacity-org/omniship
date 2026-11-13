@@ -6,6 +6,7 @@ import re
 import subprocess
 import tomllib
 import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from importlib import resources
 from importlib.metadata import version as distribution_version
@@ -14,6 +15,7 @@ from typing import Any
 from urllib.parse import quote
 
 from omniship.core.execution import SecretRef
+from omniship.plugins.api import GeneratedFile
 from omniship.workflow.model import GitPluginPackage, PluginIndex, PluginPackage
 
 LOCK_VERSION = 1
@@ -342,3 +344,53 @@ def _github_json(path: str) -> Any:
             return json.loads(response.read().decode("utf-8"))
     except Exception as exc:
         raise ValueError(f"Could not resolve GitHub Action dependency: {exc}") from exc
+
+
+class GitHubLockUpdater:
+    """Refresh the GitHub Action, OmniShip, and Git plugin pins for `omniship update`."""
+
+    name = "github/actions"
+
+    def update(
+        self,
+        path: Path,
+        dependency: str | None,
+        echo: Callable[[str], None],
+    ) -> GeneratedFile:
+        lock = GitHubActionLock.defaults()
+        if path.is_file():
+            current = GitHubActionLock.load(path)
+            lock = lock.with_plugins(current.plugins)
+            if dependency not in {None, "omniship"}:
+                lock = lock.with_omniship_version(current.omniship_version)
+            for pin in current.actions.values():
+                expected = lock.actions.get(pin.name)
+                if expected is None or (
+                    pin.repository == expected.repository
+                    and pin.major == expected.major
+                ):
+                    lock = lock.with_pin(pin)
+        if dependency in {None, "plugins"}:
+            refreshed = tuple(
+                resolve_git_plugin(plugin)
+                if isinstance(plugin, GitPluginPackage) and plugin.version is not None
+                else plugin
+                for plugin in lock.plugins
+            )
+            lock = lock.with_plugins(refreshed)
+        if dependency == "plugins":
+            selected = ()
+            echo("Updated Git plugin version pins")
+        elif dependency == "omniship":
+            selected = ()
+            echo(f"Updated omniship to {lock.omniship_version}")
+        else:
+            selected = lock.select(dependency)
+        for current_pin in selected:
+            updated = resolve_action(current_pin)
+            lock = lock.with_pin(updated)
+            echo(
+                f"Updated github/{updated.repository} to {updated.version} "
+                f"({updated.sha[:12]})"
+            )
+        return GeneratedFile(path, lock.render())

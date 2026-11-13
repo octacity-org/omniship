@@ -9,6 +9,7 @@ from omniship.core.logging import Logging, LogLevel, LogRecord
 from omniship.core.node import Node
 from omniship.core.result import NodeResult, NodeStatus
 from omniship.core.stage import Stage
+from omniship.plugins.github.console import GitHubLogAnnotator
 
 
 def test_terminal_ui_hides_debug_logs_by_default() -> None:
@@ -30,11 +31,38 @@ def test_terminal_ui_renders_github_warning_annotations(
     ui = TerminalUI(
         console=Console(file=output, force_terminal=False),
         logging=Logging(level=LogLevel.WARNING),
+        annotators=[GitHubLogAnnotator()],
     )
 
     ui.emit(LogRecord(Stage.BUILD, "package", LogLevel.WARNING, "Check output"))
 
     assert "::warning title=Build · Package::Check output" in output.getvalue()
+
+
+def test_terminal_ui_renders_no_annotations_without_an_annotator(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    output = StringIO()
+    ui = TerminalUI(console=Console(file=output, force_terminal=False))
+
+    ui.emit(LogRecord(Stage.BUILD, "package", LogLevel.WARNING, "Check output"))
+
+    assert "Check output" in output.getvalue()
+    assert "::warning" not in output.getvalue()
+
+
+def test_terminal_ui_skips_inactive_annotators(monkeypatch) -> None:
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
+    output = StringIO()
+    ui = TerminalUI(
+        console=Console(file=output, force_terminal=False),
+        annotators=[GitHubLogAnnotator()],
+    )
+
+    ui.emit(LogRecord(Stage.BUILD, "package", LogLevel.WARNING, "Check output"))
+
+    assert "::warning" not in output.getvalue()
 
 
 def test_terminal_ui_uses_safe_symbols_for_legacy_windows_encoding(

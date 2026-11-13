@@ -1,4 +1,5 @@
 import os
+from collections.abc import Iterable
 from datetime import datetime
 
 from rich.console import Console
@@ -15,6 +16,7 @@ from omniship.core.logging import (
 from omniship.core.node import Node
 from omniship.core.result import NodeResult, NodeStatus
 from omniship.core.stage import Stage
+from omniship.plugins.api import LogAnnotator
 
 
 class TerminalUI:
@@ -22,10 +24,14 @@ class TerminalUI:
         self,
         console: Console | None = None,
         logging: Logging | None = None,
+        annotators: Iterable[LogAnnotator] = (),
     ) -> None:
         self.console = console or Console()
         self.logging = logging or Logging()
-        self._github_actions = os.environ.get("GITHUB_ACTIONS") == "true"
+        self._annotator = next(
+            (annotator for annotator in annotators if annotator.active(os.environ)),
+            None,
+        )
         self._current_stage: Stage | None = None
         self._stage_failed = False
         self._printed_stages: set[Stage] = set()
@@ -72,17 +78,14 @@ class TerminalUI:
                 style=style,
             )
         )
-        if self._github_actions and record.level in {
+        if self._annotator is not None and record.level in {
             LogLevel.WARNING,
             LogLevel.ERROR,
         }:
-            command = "warning" if record.level == LogLevel.WARNING else "error"
-            title = self._escape_workflow_property(
-                self._annotation_title(record.stage, record.task)
-            )
-            message = self._escape_workflow_data(record.message)
             self.console.print(
-                f"::{command} title={title}::{message}",
+                self._annotator.annotate(
+                    record.level, record.stage, record.task, record.message
+                ),
                 markup=False,
             )
 
@@ -110,13 +113,11 @@ class TerminalUI:
             )
             if result.error_message:
                 self.console.print(f"    [red]Error:[/red] {result.error_message}")
-                if self._github_actions:
-                    title = self._escape_workflow_property(
-                        self._annotation_title(stage, node.id)
-                    )
-                    message = self._escape_workflow_data(result.error_message)
+                if self._annotator is not None:
                     self.console.print(
-                        f"::error title={title}::{message}",
+                        self._annotator.annotate(
+                            LogLevel.ERROR, stage, node.id, result.error_message
+                        ),
                         markup=False,
                     )
         if self.logging.show_output and includes_level(
@@ -157,22 +158,6 @@ class TerminalUI:
             for line in result.stderr.strip().splitlines():
                 if not already_streamed(line):
                     self.console.print(Text(f"    [{task}] {line}", style="red"))
-
-    @staticmethod
-    def _annotation_title(stage: Stage, task: str) -> str:
-        words = task.replace("_", "-").split("-")
-        name = " ".join(
-            "GitHub" if word.casefold() == "github" else word.title() for word in words
-        )
-        return f"{stage.value.title()} · {name}"
-
-    @staticmethod
-    def _escape_workflow_data(value: str) -> str:
-        return value.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
-
-    @classmethod
-    def _escape_workflow_property(cls, value: str) -> str:
-        return cls._escape_workflow_data(value).replace(":", "%3A").replace(",", "%2C")
 
     def _supports_unicode_symbols(self) -> bool:
         encoding = self.console.encoding or "utf-8"

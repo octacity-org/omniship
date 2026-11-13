@@ -1,3 +1,4 @@
+from omniship.core.execution import Platform
 from omniship.core.logging import Logging, LogLevel
 from omniship.workflow import (
     GitPluginPackage,
@@ -17,6 +18,7 @@ __all__ = [
     "LogLevel",
     "Logging",
     "Pipeline",
+    "Platform",
     "PluginIndex",
     "PluginPackage",
     "StageBuilder",

@@ -9,7 +9,7 @@ from typing import Any, Callable, Mapping
 from uuid import uuid4
 
 from omniship.core.artifact import Artifact
-from omniship.core.execution import ExecutionHost
+from omniship.core.execution import ExecutionHost, Platform
 from omniship.core.logging import LogLevel, LogStream
 
 
@@ -67,14 +67,13 @@ class TaskArtifacts:
         path: str | Path,
         name: str | None = None,
         metadata: Mapping[str, str] | None = None,
-        platform: str | ExecutionHost | None = None,
+        platform: Platform | None = None,
     ) -> Artifact:
         """Record a produced file or directory.
 
         ``platform`` overrides the automatic platform tag (the producing
-        host): ``"any"`` for platform-independent files, or
-        ``"<os>/<architecture>"`` such as ``"windows/x86_64"`` for
-        cross-compiled output.
+        host): ``Platform.ANY`` for platform-independent files, or a member
+        such as ``Platform.WINDOWS_X86_64`` for cross-compiled output.
         """
 
         candidate = Path(path)
@@ -89,7 +88,7 @@ class TaskArtifacts:
             artifact = Artifact.from_path(
                 candidate, name=name, metadata=metadata, platform=platform
             )
-        except ValueError as exc:
+        except TypeError as exc:
             raise TaskFailure(str(exc)) from exc
         self.values.append(artifact)
         return artifact

@@ -6,45 +6,8 @@ from pathlib import Path
 from string import hexdigits
 from typing import Iterable, Iterator, Mapping
 
-from omniship.core.execution import Architecture, ExecutionHost, OperatingSystem
+from omniship.core.execution import ExecutionHost, Platform
 from omniship.core.stage import Stage
-
-ANY_PLATFORM = "any"
-
-
-def _platform_tag(value: object) -> str | None:
-    """Normalize an explicit artifact platform to ``any`` or ``<os>/<arch>``."""
-
-    if value is None or value == ANY_PLATFORM:
-        return value
-    host = value
-    if isinstance(value, str):
-        system, separator, architecture = value.partition("/")
-        try:
-            host = ExecutionHost(OperatingSystem(system), Architecture(architecture))
-        except ValueError:
-            host = None
-        if not separator:
-            host = None
-    if (
-        not isinstance(host, ExecutionHost)
-        or host.os is OperatingSystem.UNKNOWN
-        or host.architecture is Architecture.UNKNOWN
-    ):
-        known_systems = ", ".join(
-            item.value
-            for item in OperatingSystem
-            if item is not OperatingSystem.UNKNOWN
-        )
-        known_architectures = ", ".join(
-            item.value for item in Architecture if item is not Architecture.UNKNOWN
-        )
-        raise ValueError(
-            f"Artifact platform must be '{ANY_PLATFORM}' or '<os>/<architecture>' "
-            f"with os in {known_systems} and architecture in {known_architectures}; "
-            f"got {value!r}"
-        )
-    return f"{host.os.value}/{host.architecture.value}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -76,11 +39,11 @@ class ArtifactProvenance:
 class Artifact:
     """A named file or directory produced by a pipeline operation.
 
-    ``platform`` is an explicit platform tag: ``any`` for platform-independent
-    files, or ``<os>/<architecture>`` such as ``windows/x86_64`` for files
-    built for a platform other than the producing host (cross-compiled
-    output). ``None`` means no explicit tag; the producing host is recorded in
-    ``provenance``.
+    ``platform`` is an explicit platform tag: ``Platform.ANY`` for
+    platform-independent files, or a member such as
+    ``Platform.WINDOWS_X86_64`` for files built for a platform other than the
+    producing host (cross-compiled output). ``None`` means no explicit tag;
+    the producing host is recorded in ``provenance``.
     """
 
     path: Path
@@ -88,10 +51,13 @@ class Artifact:
     metadata: Mapping[str, str] = field(default_factory=dict)
     digest: ArtifactDigest | None = None
     provenance: ArtifactProvenance | None = None
-    platform: str | None = None
+    platform: Platform | None = None
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "platform", _platform_tag(self.platform))
+        if self.platform is not None and not isinstance(self.platform, Platform):
+            raise TypeError(
+                f"Artifact platform must be a Platform member, got {self.platform!r}"
+            )
 
     @classmethod
     def from_path(
@@ -101,7 +67,7 @@ class Artifact:
         metadata: Mapping[str, str] | None = None,
         digest: ArtifactDigest | None = None,
         provenance: ArtifactProvenance | None = None,
-        platform: str | ExecutionHost | None = None,
+        platform: Platform | None = None,
     ) -> "Artifact":
         """Create an artifact with an absolute path and copied metadata."""
 

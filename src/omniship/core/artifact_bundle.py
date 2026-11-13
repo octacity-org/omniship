@@ -16,7 +16,12 @@ from omniship.core.artifact import (
     ArtifactProvenance,
     ArtifactSet,
 )
-from omniship.core.execution import Architecture, ExecutionHost, OperatingSystem
+from omniship.core.execution import (
+    Architecture,
+    ExecutionHost,
+    OperatingSystem,
+    Platform,
+)
 from omniship.core.stage import Stage
 
 MANIFEST_NAME = "manifest.json"
@@ -213,7 +218,7 @@ def export_artifacts(artifacts: ArtifactSet, destination: str | Path) -> Path:
             "executables": _executables(target),
         }
         if artifact.platform is not None:
-            entry["platform"] = artifact.platform
+            entry["platform"] = artifact.platform.value
         manifest.append(entry)
 
     manifest_path = bundle / MANIFEST_NAME
@@ -288,23 +293,21 @@ def import_artifacts(
             _digest_path(stored)
         _restore_executables(entry, stored, path)
         platform = entry.get("platform")
-        if platform is not None and not isinstance(platform, str):
-            raise ValueError(f"Invalid artifact manifest platform: {path}")
-        provenance = _load_provenance(entry.get("provenance"))
-        try:
-            artifact = Artifact.from_path(
+        if platform is not None:
+            try:
+                platform = Platform(platform)
+            except ValueError as exc:
+                raise ValueError(f"Invalid artifact manifest platform: {path}") from exc
+        artifacts.add(
+            Artifact.from_path(
                 stored,
                 name=name,
                 metadata=metadata,
                 digest=digest,
-                provenance=provenance,
+                provenance=_load_provenance(entry.get("provenance")),
                 platform=platform,
             )
-        except ValueError as exc:
-            raise ValueError(
-                f"Invalid artifact manifest platform: {path}: {exc}"
-            ) from exc
-        artifacts.add(artifact)
+        )
     _validate_revisions(artifacts, expected_revision=expected_revision)
     return artifacts
 

@@ -16,7 +16,12 @@ from omniship.core.artifact_bundle import (
     import_artifacts,
 )
 from omniship.core.context import ExecutionContext
-from omniship.core.execution import Architecture, ExecutionHost, OperatingSystem
+from omniship.core.execution import (
+    Architecture,
+    ExecutionHost,
+    OperatingSystem,
+    Platform,
+)
 from omniship.core.result import NodeResult, NodeStatus
 from omniship.core.stage import Stage
 
@@ -157,41 +162,40 @@ def test_artifact_bundle_rejects_malformed_manifest_fields(
         import_artifacts(bundle)
 
 
-@pytest.mark.parametrize(
-    ("platform", "expected"),
-    [
-        (None, None),
-        ("any", "any"),
-        ("windows/x86_64", "windows/x86_64"),
-        (ExecutionHost(OperatingSystem.MACOS, Architecture.ARM64), "macos/arm64"),
-    ],
-)
-def test_artifact_platform_tag_is_normalized(
-    tmp_path: Path, platform: object, expected: str | None
+def test_platform_members_name_an_os_and_architecture() -> None:
+    systems = {item.value for item in OperatingSystem} - {"unknown"}
+    architectures = {item.value for item in Architecture} - {"unknown"}
+
+    assert {member.value for member in Platform} == {"any"} | {
+        f"{system}/{architecture}"
+        for system in systems
+        for architecture in architectures
+    }
+
+
+@pytest.mark.parametrize("platform", [None, Platform.ANY, Platform.WINDOWS_X86_64])
+def test_artifact_accepts_platform_members(
+    tmp_path: Path, platform: Platform | None
 ) -> None:
     artifact = Artifact.from_path(tmp_path / "zova.lib", platform=platform)
 
-    assert artifact.platform == expected
+    assert artifact.platform is platform
 
 
 @pytest.mark.parametrize(
     "platform",
     [
-        "",
-        "windows",
-        "Windows/x86_64",
-        "win/x86_64",
-        "linux/x86",
-        "linux/x86_64/gnu",
-        "unknown/x86_64",
-        ExecutionHost(OperatingSystem.LINUX, Architecture.UNKNOWN),
+        "any",
+        "windows/x86_64",
+        ExecutionHost(OperatingSystem.MACOS, Architecture.ARM64),
+        OperatingSystem.WINDOWS,
         42,
     ],
 )
-def test_artifact_platform_tag_rejects_unknown_platforms(
+def test_artifact_rejects_platforms_that_are_not_members(
     tmp_path: Path, platform: object
 ) -> None:
-    with pytest.raises(ValueError, match="Artifact platform must be"):
+    with pytest.raises(TypeError, match="must be a Platform member"):
         Artifact.from_path(tmp_path / "zova.lib", platform=platform)
 
 
@@ -204,8 +208,8 @@ def test_artifact_bundle_round_trips_platform_tags(tmp_path: Path) -> None:
     plain.write_bytes(b"tool")
     artifacts = ArtifactSet(
         [
-            Artifact.from_path(library, platform="windows/x86_64"),
-            Artifact.from_path(docs, platform="any"),
+            Artifact.from_path(library, platform=Platform.WINDOWS_X86_64),
+            Artifact.from_path(docs, platform=Platform.ANY),
             Artifact.from_path(plain),
         ]
     )
@@ -223,8 +227,8 @@ def test_artifact_bundle_round_trips_platform_tags(tmp_path: Path) -> None:
     ]
     assert "platform" not in entries[2]
     assert [artifact.platform for artifact in restored] == [
-        "windows/x86_64",
-        "any",
+        Platform.WINDOWS_X86_64,
+        Platform.ANY,
         None,
     ]
 

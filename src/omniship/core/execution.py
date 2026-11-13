@@ -61,6 +61,23 @@ class Architecture(StrEnum):
     UNKNOWN = "unknown"
 
 
+class Platform(StrEnum):
+    """Platform an artifact is built for.
+
+    ``ANY`` marks platform-independent files. The other members name an
+    operating system and architecture, for files whose platform differs from
+    the host that produced them, such as cross-compiled output.
+    """
+
+    ANY = "any"
+    LINUX_X86_64 = "linux/x86_64"
+    LINUX_ARM64 = "linux/arm64"
+    MACOS_X86_64 = "macos/x86_64"
+    MACOS_ARM64 = "macos/arm64"
+    WINDOWS_X86_64 = "windows/x86_64"
+    WINDOWS_ARM64 = "windows/arm64"
+
+
 @dataclass(frozen=True, slots=True)
 class ExecutionHost:
     """The machine running a task, distinct from a compiler's output target."""

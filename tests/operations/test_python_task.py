@@ -4,6 +4,7 @@ import pytest
 
 from omniship.core.artifact import Artifact
 from omniship.core.context import ExecutionContext
+from omniship.core.execution import Platform
 from omniship.core.logging import LogLevel, LogRecord
 from omniship.core.node import NodeInputs
 from omniship.core.stage import Stage
@@ -37,6 +38,29 @@ async def test_python_task_executes_and_collects_artifacts(tmp_path: Path) -> No
 async def test_python_task_tags_cross_compiled_artifacts(tmp_path: Path) -> None:
     workflow = tmp_path / "workflow.py"
     workflow.write_text(
+        "from omniship import Platform\n"
+        "def package(ctx):\n"
+        "    output = ctx.workspace / 'zova.lib'\n"
+        "    output.write_text('lib')\n"
+        "    ctx.artifacts.add(output, platform=Platform.WINDOWS_X86_64)\n",
+        encoding="utf-8",
+    )
+    context = ExecutionContext(workspace_root=tmp_path, stage=Stage.BUILD)
+
+    result = await PythonTaskOperation().execute(
+        context,
+        NodeInputs(params={"callable": "workflow.py:package"}),
+    )
+    context.record_result("package", result)
+
+    assert result.is_success
+    assert context.artifacts.get("zova.lib").platform is Platform.WINDOWS_X86_64
+
+
+@pytest.mark.asyncio
+async def test_python_task_rejects_platform_strings(tmp_path: Path) -> None:
+    workflow = tmp_path / "workflow.py"
+    workflow.write_text(
         "def package(ctx):\n"
         "    output = ctx.workspace / 'zova.lib'\n"
         "    output.write_text('lib')\n"
@@ -49,31 +73,9 @@ async def test_python_task_tags_cross_compiled_artifacts(tmp_path: Path) -> None
         context,
         NodeInputs(params={"callable": "workflow.py:package"}),
     )
-    context.record_result("package", result)
-
-    assert result.is_success
-    assert context.artifacts.get("zova.lib").platform == "windows/x86_64"
-
-
-@pytest.mark.asyncio
-async def test_python_task_rejects_unknown_artifact_platforms(tmp_path: Path) -> None:
-    workflow = tmp_path / "workflow.py"
-    workflow.write_text(
-        "def package(ctx):\n"
-        "    output = ctx.workspace / 'zova.lib'\n"
-        "    output.write_text('lib')\n"
-        "    ctx.artifacts.add(output, platform='win64')\n",
-        encoding="utf-8",
-    )
-    context = ExecutionContext(workspace_root=tmp_path, stage=Stage.BUILD)
-
-    result = await PythonTaskOperation().execute(
-        context,
-        NodeInputs(params={"callable": "workflow.py:package"}),
-    )
 
     assert not result.is_success
-    assert "Artifact platform must be" in (result.error_message or "")
+    assert "must be a Platform member" in (result.error_message or "")
 
 
 @pytest.mark.asyncio

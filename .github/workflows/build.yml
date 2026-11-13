@@ -19,6 +19,8 @@ jobs:
     - name: Run Wheel
       run: uv run omniship run-node --stage build --node wheel --config omniship.yaml --export-artifacts .omniship/handoff/build-wheel
       env:
+        OMNISHIP_REF_TYPE: ${{ github.ref_type }}
+        OMNISHIP_REF_NAME: ${{ github.ref_name }}
         OMNISHIP_REVISION: ${{ github.sha }}
     - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
       with:

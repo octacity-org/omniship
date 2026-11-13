@@ -8,6 +8,7 @@ from dataclasses import replace
 from typing import Any, Protocol
 
 from omniship.core.context import ExecutionContext
+from omniship.core.execution import REF_NAME_ENV, REF_TYPE_ENV
 from omniship.core.graph import StageGraph
 from omniship.core.input import RuntimeInputError, resolve_runtime_inputs
 from omniship.core.node import Node, NodeInputs
@@ -42,6 +43,9 @@ def evaluate_condition(condition: Any, context: ExecutionContext) -> bool:
     Strings support booleans, the special ``tag`` predicate, and environment
     variable presence. Mappings support exact environment matches and branch
     selection, using Git metadata as a local fallback.
+
+    CI targets describe the triggering ref through ``OMNISHIP_REF_TYPE`` and
+    ``OMNISHIP_REF_NAME``; ``TAG`` and ``GIT_BRANCH`` act as local overrides.
     """
 
     if condition is None:
@@ -53,11 +57,7 @@ def evaluate_condition(condition: Any, context: ExecutionContext) -> bool:
         if cond.lower() in ("false", "0", "no"):
             return False
         if cond == "tag":
-            return bool(
-                os.environ.get("GITHUB_TAG")
-                or os.environ.get("TAG")
-                or os.environ.get("GITHUB_REF_TYPE") == "tag"
-            )
+            return bool(os.environ.get("TAG") or os.environ.get(REF_TYPE_ENV) == "tag")
         return bool(os.environ.get(cond) or context.env.get(cond))
 
     if isinstance(condition, dict):
@@ -70,7 +70,7 @@ def evaluate_condition(condition: Any, context: ExecutionContext) -> bool:
         if "branch" in condition:
             expected_branch = str(condition["branch"])
             current_branch = os.environ.get("GIT_BRANCH") or os.environ.get(
-                "GITHUB_REF_NAME"
+                REF_NAME_ENV
             )
             if not current_branch:
                 try:

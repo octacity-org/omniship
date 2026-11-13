@@ -29,6 +29,8 @@ jobs:
     - name: Run Pypi Publish
       run: uv run omniship run-node --stage ship --node pypi-publish --config omniship.yaml --import-artifacts-root .omniship/imports
       env:
+        OMNISHIP_REF_TYPE: ${{ github.ref_type }}
+        OMNISHIP_REF_NAME: ${{ github.ref_name }}
         OMNISHIP_REVISION: ${{ github.sha }}
   ship-github-release:
     name: Ship · GitHub Release
@@ -47,6 +49,8 @@ jobs:
     - name: Run GitHub Release
       run: uv run omniship run-node --stage ship --node github-release --config omniship.yaml --import-artifacts-root .omniship/imports
       env:
+        OMNISHIP_REF_TYPE: ${{ github.ref_type }}
+        OMNISHIP_REF_NAME: ${{ github.ref_name }}
         OMNISHIP_REVISION: ${{ github.sha }}
         GITHUB_TOKEN: ${{ github.token }}
   ship-complete:

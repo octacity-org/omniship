@@ -201,19 +201,20 @@ def export_artifacts(artifacts: ArtifactSet, destination: str | Path) -> Path:
         else:
             raise ValueError(f"Artifact is not a file or directory: {artifact.path}")
         digest = _digest_path(target)
-        manifest.append(
-            {
-                "name": artifact.name,
-                "path": stored.as_posix(),
-                "metadata": dict(artifact.metadata),
-                "digest": {
-                    "algorithm": digest.algorithm,
-                    "value": digest.value,
-                },
-                "provenance": _provenance_document(artifact.provenance),
-                "executables": _executables(target),
-            }
-        )
+        entry: dict[str, object] = {
+            "name": artifact.name,
+            "path": stored.as_posix(),
+            "metadata": dict(artifact.metadata),
+            "digest": {
+                "algorithm": digest.algorithm,
+                "value": digest.value,
+            },
+            "provenance": _provenance_document(artifact.provenance),
+            "executables": _executables(target),
+        }
+        if artifact.platform is not None:
+            entry["platform"] = artifact.platform
+        manifest.append(entry)
 
     manifest_path = bundle / MANIFEST_NAME
     manifest_path.write_text(
@@ -286,15 +287,24 @@ def import_artifacts(
             # Version 1 has no digest; still reject symlinks inside directories.
             _digest_path(stored)
         _restore_executables(entry, stored, path)
-        artifacts.add(
-            Artifact.from_path(
+        platform = entry.get("platform")
+        if platform is not None and not isinstance(platform, str):
+            raise ValueError(f"Invalid artifact manifest platform: {path}")
+        provenance = _load_provenance(entry.get("provenance"))
+        try:
+            artifact = Artifact.from_path(
                 stored,
                 name=name,
                 metadata=metadata,
                 digest=digest,
-                provenance=_load_provenance(entry.get("provenance")),
+                provenance=provenance,
+                platform=platform,
             )
-        )
+        except ValueError as exc:
+            raise ValueError(
+                f"Invalid artifact manifest platform: {path}: {exc}"
+            ) from exc
+        artifacts.add(artifact)
     _validate_revisions(artifacts, expected_revision=expected_revision)
     return artifacts
 

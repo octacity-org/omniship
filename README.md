@@ -233,6 +233,20 @@ generated GitHub Actions workflows:
 
 Bundles record executable files, so binaries keep their mode after transfer.
 
+Bundles also record the OS and architecture of the host that produced each
+artifact. When that host is not the platform a file is for, such as
+cross-compiled output, tag the artifact explicitly. Use `"any"` for
+platform-independent files:
+
+```python
+ctx.artifacts.add("zig-out/lib/zova.lib", platform="windows/x86_64")
+ctx.artifacts.add("docs/site", name="docs-site", platform="any")
+```
+
+Platforms are `<os>/<architecture>` with `linux`, `macos` or `windows` and
+`x86_64` or `arm64`. The tag is stored in the bundle manifest; imports do not
+yet filter artifacts by platform.
+
 A directory artifact can be deployed with the bundled GitHub Pages component:
 
 ```python

@@ -67,7 +67,16 @@ class TaskArtifacts:
         path: str | Path,
         name: str | None = None,
         metadata: Mapping[str, str] | None = None,
+        platform: str | ExecutionHost | None = None,
     ) -> Artifact:
+        """Record a produced file or directory.
+
+        ``platform`` overrides the automatic platform tag (the producing
+        host): ``"any"`` for platform-independent files, or
+        ``"<os>/<architecture>"`` such as ``"windows/x86_64"`` for
+        cross-compiled output.
+        """
+
         candidate = Path(path)
         if not candidate.is_absolute():
             candidate = self.workspace_root / candidate
@@ -76,7 +85,12 @@ class TaskArtifacts:
             raise TaskFailure(f"Artifact path escapes workspace: {path}")
         if not candidate.exists():
             raise TaskFailure(f"Artifact does not exist: {path}")
-        artifact = Artifact.from_path(candidate, name=name, metadata=metadata)
+        try:
+            artifact = Artifact.from_path(
+                candidate, name=name, metadata=metadata, platform=platform
+            )
+        except ValueError as exc:
+            raise TaskFailure(str(exc)) from exc
         self.values.append(artifact)
         return artifact
 

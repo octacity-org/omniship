@@ -25,6 +25,7 @@ omniship = "omniship.cli.app:cli"
 core = "omniship.operations:register_core_plugin"
 python = "omniship.plugins.python:register_python_plugin"
 github = "omniship.plugins.github:register_github_plugin"
+gitlab = "omniship.plugins.gitlab:register_gitlab_plugin"
 system = "omniship.plugins.system:register_system_plugin"
 packaging = "omniship.plugins.packaging:register_packaging_plugin"
 node = "omniship.plugins.node:register_node_plugin"
@@ -45,6 +46,7 @@ build-backend = "uv_build"
 [dependency-groups]
 dev = [
     "build>=1.6.1",
+    "check-jsonschema>=0.39.0",
     "pytest>=9.1.1",
     "pytest-asyncio>=1.4.0",
     "ruff>=0.16.8",

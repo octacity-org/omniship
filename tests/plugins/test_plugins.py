@@ -18,7 +18,8 @@ def test_plugin_registry_and_discovery():
     assert reg.has_operation("python/wheel")
     assert reg.has_operation("github/release")
     assert [generator.name for generator in reg.list_workflow_generators()] == [
-        "github/actions"
+        "github/actions",
+        "gitlab/ci",
     ]
 
     op = reg.get_operation("core/command")

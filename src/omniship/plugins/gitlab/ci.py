@@ -29,9 +29,17 @@ LOCK_FILENAME = "omniship.lock"
 # uv's own GitLab guide uses the Debian "trixie-slim" image with Python; OmniShip
 # itself requires Python 3.14. Override with GitLabCI(image=...).
 DEFAULT_IMAGE = "ghcr.io/astral-sh/uv:0.13.8-python3.14-trixie-slim"
+# Build jobs export bundles to <ARTIFACT_PATH>/<job>; GitLab restores job
+# artifacts at the same path, so importers read the whole directory.
+ARTIFACT_PATH = ".omniship/handoff"
+EXPECTED_ARTIFACT_REVISION_ENV = "OMNISHIP_EXPECTED_ARTIFACT_REVISION"
+# Matches the GitHub Actions target's ``v*`` tag trigger for Ship.
+SHIP_RULE = "$CI_COMMIT_TAG =~ /^v/"
 
 _VARIABLE_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
-_RESERVED_VARIABLES = frozenset({REF_NAME_ENV, REF_TYPE_ENV, REVISION_ENV})
+_RESERVED_VARIABLES = frozenset(
+    {REF_NAME_ENV, REF_TYPE_ENV, REVISION_ENV, EXPECTED_ARTIFACT_REVISION_ENV}
+)
 
 
 @dataclass(frozen=True)
@@ -82,7 +90,7 @@ class GitLabJob:
 
 @dataclass(frozen=True)
 class GitLabCI:
-    """Generate `.gitlab-ci.yml` for the Check and Build stages."""
+    """Generate `.gitlab-ci.yml`; Ship jobs run only for ``v*`` tags."""
 
     name: ClassVar[str] = "gitlab/ci"
     image: str = DEFAULT_IMAGE
@@ -199,11 +207,6 @@ class GitLabCIGenerator:
         if len(targets) > 1:
             raise ValueError("Pipeline has more than one GitLab CI target")
         gitlab = targets[0]
-        if config.ship:
-            raise ValueError(
-                "The gitlab/ci target cannot generate Ship tasks yet; "
-                "Build to Ship artifact handoff is not implemented"
-            )
 
         workspace_root = source_path.parent.resolve()
         source = source_path.resolve().relative_to(workspace_root)
@@ -220,17 +223,25 @@ class GitLabCIGenerator:
 
         jobs: dict[str, dict[str, object]] = {}
         root_needs: list[str] = []
-        for stage, nodes in ((Stage.CHECK, config.check), (Stage.BUILD, config.build)):
-            gate = self._stage_jobs(
+        build_jobs: list[str] = []
+        for stage, nodes in (
+            (Stage.CHECK, config.check),
+            (Stage.BUILD, config.build),
+            (Stage.SHIP, config.ship),
+        ):
+            stage_jobs = self._stage_jobs(
                 stage,
                 nodes,
                 jobs,
                 gitlab=gitlab,
                 root_needs=root_needs,
+                build_jobs=build_jobs,
                 omniship_command=omniship_command,
                 pipeline_config=pipeline_config,
             )
-            root_needs = [gate]
+            if stage == Stage.BUILD:
+                build_jobs = stage_jobs
+            root_needs = [f"{stage.value}-complete"]
 
         document: dict[str, object] = {
             "workflow": {
@@ -285,10 +296,15 @@ class GitLabCIGenerator:
         *,
         gitlab: GitLabCI,
         root_needs: list[str],
+        build_jobs: list[str],
         omniship_command: list[str],
         pipeline_config: Path,
-    ) -> str:
-        """Add one job per node plus the stage gate; return the gate job name."""
+    ) -> list[str]:
+        """Add one job per node and, before Ship, the stage gate.
+
+        Returns the node job names. Ship has no gate: nothing runs after it,
+        and its jobs do not exist in pipelines for other refs.
+        """
 
         gate = f"{stage.value}-complete"
         job_names: dict[str, str] = {}
@@ -327,6 +343,21 @@ class GitLabCIGenerator:
                 "--config",
                 pipeline_config.as_posix(),
             ]
+            needs: list[object] = [
+                job_names[dependency] for dependency in node.needs
+            ] or list(root_needs)
+            # GitLab downloads the artifacts of every job in ``needs``, so a
+            # Build job already has its Build dependencies' bundles.
+            imports_artifacts = stage == Stage.BUILD and bool(node.needs)
+            if stage == Stage.SHIP and build_jobs:
+                needs.extend({"job": name, "artifacts": True} for name in build_jobs)
+                imports_artifacts = True
+            if imports_artifacts:
+                command.extend(["--import-artifacts-root", ARTIFACT_PATH])
+            export_path = f"{ARTIFACT_PATH}/{job_names[node_name]}"
+            if stage == Stage.BUILD:
+                command.extend(["--export-artifacts", export_path])
+
             job: dict[str, object] = {"stage": stage.value}
             if placement.image is not None:
                 job["image"] = placement.image
@@ -334,27 +365,38 @@ class GitLabCIGenerator:
                 job["tags"] = list(placement.tags)
             if placement.timeout_minutes is not None:
                 job["timeout"] = f"{placement.timeout_minutes}m"
-            needs = [job_names[dependency] for dependency in node.needs] or root_needs
+            if stage == Stage.SHIP:
+                job["rules"] = [{"if": SHIP_RULE}]
             if needs:
-                job["needs"] = list(needs)
+                job["needs"] = needs
             variables = {
                 name: _variable_document(value)
                 for name, value in placement.variables.items()
                 if not (isinstance(value, SecretRef) and value.name == name)
             }
-            if stage == Stage.BUILD:
+            if stage in {Stage.BUILD, Stage.SHIP}:
                 variables[REVISION_ENV] = "$CI_COMMIT_SHA"
+            if imports_artifacts:
+                # Reject bundles that another commit's pipeline produced.
+                variables[EXPECTED_ARTIFACT_REVISION_ENV] = "$CI_COMMIT_SHA"
             if variables:
                 job["variables"] = variables
             job["script"] = [shlex.join(command)]
+            if stage == Stage.BUILD:
+                job["artifacts"] = {"paths": [export_path]}
             jobs[job_names[node_name]] = job
             if node_name not in depended_on:
                 terminal.append(job_names[node_name])
 
-        gate_needs = terminal or root_needs
+        if stage == Stage.SHIP:
+            return list(job_names.values())
+        gate_needs: list[object] = list(terminal or root_needs)
+        if stage == Stage.BUILD and terminal:
+            # The gate only orders jobs; skip downloading the bundles.
+            gate_needs = [{"job": name, "artifacts": False} for name in terminal]
         jobs[gate] = {
             "stage": stage.value,
-            "needs": list(gate_needs),
+            "needs": gate_needs,
             "script": [f"echo '{stage.value} stage complete'"],
         }
-        return gate
+        return list(job_names.values())

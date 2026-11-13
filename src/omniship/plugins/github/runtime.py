@@ -9,11 +9,23 @@ import urllib.request
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from omniship.core.artifact import Artifact
 from omniship.runtime import TaskContext, TaskFailure
 
 PAGES_STAGING_PATH = Path(".omniship/pages/site")
+RELEASES_PAGE_SIZE = 100
+
+
+def is_prerelease_tag(tag: str) -> bool:
+    """Whether ``tag`` names a semver prerelease, such as ``v1.2.0-rc.1``.
+
+    The part after ``+`` is build metadata, so ``v1.2.0+build-5`` is a
+    regular release.
+    """
+
+    return "-" in tag.split("+", 1)[0]
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,10 +63,21 @@ class GitHub:
         notes: str | None = "auto",
         title: str | None = None,
         draft: bool = False,
-        prerelease: bool = False,
+        prerelease: bool | Literal["auto"] = False,
         files: Iterable[str] = (),
         dry_run: bool = False,
     ) -> GitHubReleaseResult:
+        """Publish ``tag`` with the selected artifacts attached.
+
+        The release is created as a draft and published only after every
+        asset is uploaded, so users never see it without its files. A draft
+        left by an earlier attempt is reused; a published release is never
+        changed. ``prerelease="auto"`` marks semver prerelease tags such as
+        ``v1.2.0-rc.1`` (see :func:`is_prerelease_tag`).
+        """
+
+        if prerelease == "auto":
+            prerelease = is_prerelease_tag(tag)
         token = self.context.env.get("GITHUB_TOKEN")
         if not dry_run and not token:
             raise TaskFailure(
@@ -85,40 +108,53 @@ class GitHub:
             )
 
         try:
-            # A re-run reuses the release created by an earlier attempt.
-            data = self._existing_release(token, repository, tag)
+            if self._published_release(token, repository, tag) is not None:
+                raise TaskFailure(
+                    f"Release {tag} is already published; OmniShip does not "
+                    "change published releases"
+                )
+            # A re-run reuses the draft created by an earlier attempt.
+            data = self._draft_release(token, repository, tag)
             if data is None:
                 document: dict[str, object] = {
                     "tag_name": tag,
                     "name": title or tag,
                     "body": "" if notes in (None, "auto") else notes,
                     "generate_release_notes": notes == "auto",
-                    "draft": draft,
+                    "draft": True,
                     "prerelease": prerelease,
                 }
                 # Used only when the tag does not exist yet.
                 if target := self.context.env.get("GITHUB_SHA"):
                     document["target_commitish"] = target
-                request = urllib.request.Request(
+                data = self._api_request(
+                    token,
                     f"https://api.github.com/repos/{repository}/releases",
-                    data=json.dumps(document).encode("utf-8"),
-                    headers=self._api_headers(token),
-                    method="POST",
+                    "POST",
+                    document,
                 )
-                with urllib.request.urlopen(request, timeout=15) as response:
-                    data = json.loads(response.read().decode("utf-8"))
             else:
-                self.context.log.info(f"Reusing existing release {tag}")
-            release_url = data.get("html_url", "")
+                self.context.log.info(f"Reusing draft release {tag}")
             self._upload_artifacts(token, data, artifacts)
+            if not draft:
+                data = self._api_request(
+                    token,
+                    f"https://api.github.com/repos/{repository}/releases/{data['id']}",
+                    "PATCH",
+                    {"draft": False},
+                )
+            release_url = data.get("html_url", "")
         except TaskFailure:
             raise
         except Exception as exc:
             raise TaskFailure(f"GitHub release creation failed: {exc}") from exc
 
-        self.context.log.info(
-            f"Successfully published release {tag} to {release_url}"
-        )
+        if draft:
+            self.context.log.info(f"Prepared draft release {tag} at {release_url}")
+        else:
+            self.context.log.info(
+                f"Successfully published release {tag} to {release_url}"
+            )
         return GitHubReleaseResult(
             repository=repository,
             tag=tag,
@@ -266,25 +302,62 @@ class GitHub:
         }
 
     @classmethod
-    def _existing_release(
+    def _api_request(
+        cls,
+        token: str,
+        url: str,
+        method: str = "GET",
+        document: dict[str, object] | None = None,
+    ) -> object:
+        request = urllib.request.Request(
+            url,
+            data=None if document is None else json.dumps(document).encode("utf-8"),
+            headers=cls._api_headers(token),
+            method=method,
+        )
+        with urllib.request.urlopen(request, timeout=15) as response:
+            return json.loads(response.read().decode("utf-8"))
+
+    @classmethod
+    def _published_release(
         cls,
         token: str,
         repository: str,
         tag: str,
     ) -> dict | None:
-        request = urllib.request.Request(
-            f"https://api.github.com/repos/{repository}/releases/tags/"
-            f"{urllib.parse.quote(tag, safe='')}",
-            headers=cls._api_headers(token),
-            method="GET",
-        )
+        # This endpoint returns published releases only, never drafts.
         try:
-            with urllib.request.urlopen(request, timeout=15) as response:
-                return json.loads(response.read().decode("utf-8"))
+            return cls._api_request(
+                token,
+                f"https://api.github.com/repos/{repository}/releases/tags/"
+                f"{urllib.parse.quote(tag, safe='')}",
+            )
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
                 return None
             raise
+
+    @classmethod
+    def _draft_release(
+        cls,
+        token: str,
+        repository: str,
+        tag: str,
+    ) -> dict | None:
+        # Drafts have no tag yet, so only the release list finds them.
+        page = 1
+        while True:
+            releases = cls._api_request(
+                token,
+                f"https://api.github.com/repos/{repository}/releases"
+                f"?per_page={RELEASES_PAGE_SIZE}&page={page}",
+            )
+            for release in releases:
+                if release.get("draft") and release.get("tag_name") == tag:
+                    return release
+            if len(releases) < RELEASES_PAGE_SIZE:
+                return None
+            page += 1
 
     def _upload_artifacts(
         self,

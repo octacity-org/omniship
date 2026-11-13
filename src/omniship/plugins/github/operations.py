@@ -1,6 +1,7 @@
 import asyncio
 import os
 import time
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -125,7 +126,13 @@ class GithubReleaseConfig(BaseModel):
         description="Ask GitHub to generate release notes",
     )
     draft: bool = Field(default=False, description="Whether to create as draft")
-    prerelease: bool = Field(default=False, description="Whether this is a prerelease")
+    prerelease: bool | Literal["auto"] = Field(
+        default=False,
+        description=(
+            "Whether this is a prerelease; 'auto' marks semver prerelease tags "
+            "such as v1.2.0-rc.1"
+        ),
+    )
     files: list[str] = Field(
         default_factory=list,
         description="Explicit artifact names or paths to attach; defaults to all context artifacts",

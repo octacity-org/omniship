@@ -23,8 +23,13 @@ variables:
   OMNISHIP_REF_NAME: $CI_COMMIT_REF_NAME
 check-lint:
   stage: check
+  variables:
+    OMNISHIP_REVISION: $CI_COMMIT_SHA
   script:
-  - uvx --from omniship==9.9.9 omniship run-node --stage check --node lint --config omniship.yaml
+  - uvx --from omniship==9.9.9 omniship run-node --stage check --node lint --config omniship.yaml --export-artifacts .omniship/check-handoff/check-lint
+  artifacts:
+    paths:
+    - .omniship/check-handoff/check-lint
 check-test:
   stage: check
   image: ghcr.io/astral-sh/uv:0.13.8-python3.14-trixie
@@ -40,8 +45,10 @@ check-test:
       value: 5$
       expand: false
     TOKEN: $PYPI_TOKEN
+    OMNISHIP_REVISION: $CI_COMMIT_SHA
+    OMNISHIP_EXPECTED_ARTIFACT_REVISION: $CI_COMMIT_SHA
   script:
-  - uvx --from omniship==9.9.9 omniship run-node --stage check --node test --config omniship.yaml
+  - uvx --from omniship==9.9.9 omniship run-node --stage check --node test --config omniship.yaml --import-artifacts-root .omniship/check-handoff
 check-types:
   stage: check
   script:

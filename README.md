@@ -117,9 +117,16 @@ credentials on a developer machine.
 
 When Ship runs for a pushed tag, the release fails if its tag differs from the
 pushed one, so bump the version and regenerate before tagging. A new tag is
-created at the built commit. Re-running Ship reuses the existing release and
-skips assets already uploaded with identical content. Release assets must be
+created at the built commit. The release is created as a draft and published
+only after every asset is uploaded, so it is never public without its files;
+`draft=True` leaves it a draft. Re-running Ship reuses that draft and skips
+assets already uploaded with identical content. A release that is already
+published is never changed: the release fails instead. Release assets must be
 files: directory artifacts are skipped unless listed in `files`, which fails.
+
+`prerelease="auto"` marks semver prerelease tags, such as `v1.2.0-rc.1`, as
+prereleases, so they do not become the latest release. Build metadata after
+`+` is ignored: `v1.2.0+build-5` is a regular release.
 
 ## The pipeline model
 
@@ -212,7 +219,7 @@ separate property of each task.
 
 ## Artifacts
 
-Build tasks can publish named files or directories:
+Check and Build tasks can publish named files or directories:
 
 ```python
 @pipeline.build
@@ -229,7 +236,11 @@ generated GitHub Actions workflows:
 
 - every Build node uploads a bundle of the artifacts it produced;
 - a dependent Build node downloads its predecessors' bundles;
-- every Ship node receives the completed Build artifacts once each.
+- every Ship node receives the completed Build artifacts once each;
+- a Check node that another Check node depends on uploads its bundle, and the
+  dependent Check node downloads it. Check bundles never reach Build or Ship.
+
+Generated GitLab CI pipelines hand bundles between the same jobs.
 
 Bundles record executable files, so binaries keep their mode after transfer.
 
@@ -246,8 +257,16 @@ ctx.artifacts.add("docs/site", name="docs-site", platform=Platform.ANY)
 ```
 
 `Platform` has a member for each of `LINUX`, `MACOS` and `WINDOWS` with
-`X86_64` and `ARM64`, plus `ANY`. The tag is stored in the bundle manifest;
-imports do not yet filter artifacts by platform.
+`X86_64` and `ARM64`, plus `ANY`. The tag is stored in the bundle manifest.
+
+Check and Build imports use these platforms to pick variants. Artifacts that
+share a name but were built for different platforms, such as one library
+uploaded by each runner of a matrix task, are variants. A task keeps the
+variant for its own host's platform, or else the `Platform.ANY` one, and fails
+when neither exists. An untagged artifact counts as built for the host that
+produced it. Artifacts whose names differ are all kept, so a task collecting a
+different file from every runner still receives them all. Ship imports keep
+every variant, so a release can publish the files for every platform.
 
 A directory artifact can be deployed with the bundled GitHub Pages component:
 

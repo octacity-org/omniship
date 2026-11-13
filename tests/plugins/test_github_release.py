@@ -9,39 +9,59 @@ import pytest
 from omniship.core.artifact import Artifact
 from omniship.plugins.github import GitHub
 from omniship.plugins.github import runtime as github_runtime
+from omniship.plugins.github.runtime import is_prerelease_tag
 from omniship.runtime import TaskContext, TaskFailure
 
 API = "https://api.github.com/repos/octacity-org/demo"
 UPLOADS = "https://uploads.github.com/repos/octacity-org/demo/releases/7/assets"
 
 
+RELEASE = {
+    "id": 7,
+    "html_url": "https://github.com/octacity-org/demo/releases/v1.0.0",
+    "upload_url": f"{UPLOADS}{{?name,label}}",
+    "assets": [],
+}
+
+
 class FakeGitHub:
-    def __init__(self, existing: dict | None = None) -> None:
-        self.existing = existing
+    """GitHub's release API: by-tag lookups return published releases only."""
+
+    def __init__(self) -> None:
+        self.published: dict[str, dict] = {}
+        self.releases: list[dict] = []
         self.requests: list[tuple[str, str, bytes | None]] = []
 
     def urlopen(self, request, timeout=None):
         method = request.get_method()
         url = request.full_url
         self.requests.append((method, url, request.data))
-        if method == "GET" and url == f"{API}/releases/tags/v1.0.0":
-            if self.existing is None:
+        tag_prefix = f"{API}/releases/tags/"
+        if method == "GET" and url.startswith(tag_prefix):
+            tag = url.removeprefix(tag_prefix)
+            if tag not in self.published:
                 raise urllib.error.HTTPError(url, 404, "Not Found", {}, None)
-            return self._response(self.existing)
+            return self._response(self.published[tag])
+        if method == "GET" and url.startswith(f"{API}/releases?per_page=100&page="):
+            page = int(url.rsplit("=", 1)[1])
+            return self._response(self.releases[(page - 1) * 100 : page * 100])
         if method == "POST" and url == f"{API}/releases":
-            return self._response(
-                {
-                    "html_url": "https://github.com/octacity-org/demo/releases/v1.0.0",
-                    "upload_url": f"{UPLOADS}{{?name,label}}",
-                    "assets": [],
-                }
-            )
+            return self._response({**RELEASE, "draft": True})
+        if method == "PATCH" and url == f"{API}/releases/7":
+            return self._response({**RELEASE, **json.loads(request.data)})
         if method == "POST" and url.startswith(UPLOADS):
             return self._response({})
         raise AssertionError(f"unexpected request {method} {url}")
 
+    def calls(self, method: str, url: str) -> list[dict]:
+        return [
+            json.loads(data)
+            for request_method, request_url, data in self.requests
+            if request_method == method and request_url == url
+        ]
+
     @staticmethod
-    def _response(document: dict):
+    def _response(document: object):
         return io.BytesIO(json.dumps(document).encode("utf-8"))
 
 
@@ -72,55 +92,140 @@ def test_release_targets_built_commit_and_encodes_asset_names(
 ) -> None:
     GitHub(_context(tmp_path, _wheel(tmp_path))).release("octacity-org/demo", "v1.0.0")
 
-    created = next(
-        data for method, url, data in api.requests if url == f"{API}/releases"
-    )
-    assert json.loads(created)["target_commitish"] == "abc123"
+    (created,) = api.calls("POST", f"{API}/releases")
+    assert created["target_commitish"] == "abc123"
     uploads = [url for method, url, _ in api.requests if url.startswith(UPLOADS)]
     assert uploads == [f"{UPLOADS}?name=demo%201.0%2Blocal.whl"]
 
 
-def test_release_rerun_reuses_release_and_skips_identical_assets(
+def test_release_is_published_only_after_every_asset_is_uploaded(
+    tmp_path: Path,
+    api: FakeGitHub,
+) -> None:
+    result = GitHub(_context(tmp_path, _wheel(tmp_path, "app.whl"))).release(
+        "octacity-org/demo", "v1.0.0"
+    )
+
+    writes = [
+        (method, url.split("?")[0])
+        for method, url, _ in api.requests
+        if method != "GET"
+    ]
+    assert writes == [
+        ("POST", f"{API}/releases"),
+        ("POST", UPLOADS),
+        ("PATCH", f"{API}/releases/7"),
+    ]
+    (created,) = api.calls("POST", f"{API}/releases")
+    assert created["draft"] is True
+    assert api.calls("PATCH", f"{API}/releases/7") == [{"draft": False}]
+    assert result.release_url.endswith("/releases/v1.0.0")
+
+
+def test_draft_release_stays_a_draft(tmp_path: Path, api: FakeGitHub) -> None:
+    context = _context(tmp_path, _wheel(tmp_path, "app.whl"))
+
+    GitHub(context).release("octacity-org/demo", "v1.0.0", draft=True)
+
+    assert not any(method == "PATCH" for method, _, _ in api.requests)
+    assert any("Prepared draft release v1.0.0" in line for line in context.log.lines)
+
+
+def test_release_refuses_to_change_a_published_release(
+    tmp_path: Path,
+    api: FakeGitHub,
+) -> None:
+    api.published["v1.0.0"] = {**RELEASE, "draft": False}
+
+    with pytest.raises(TaskFailure, match="v1.0.0 is already published"):
+        GitHub(_context(tmp_path, _wheel(tmp_path, "app.whl"))).release(
+            "octacity-org/demo", "v1.0.0"
+        )
+    assert all(method == "GET" for method, _, _ in api.requests)
+
+
+def test_release_rerun_reuses_draft_and_skips_identical_assets(
     tmp_path: Path,
     api: FakeGitHub,
 ) -> None:
     uploaded = _wheel(tmp_path, "uploaded.whl")
     missing = _wheel(tmp_path, "missing.whl")
-    api.existing = {
-        "html_url": "https://github.com/octacity-org/demo/releases/v1.0.0",
-        "upload_url": f"{UPLOADS}{{?name,label}}",
-        "assets": [
-            {
-                "name": "uploaded.whl",
-                "digest": "sha256:" + hashlib.sha256(b"wheel").hexdigest(),
-            }
-        ],
-    }
+    other = {**RELEASE, "id": 3, "tag_name": "v0.9.0", "draft": True}
+    api.releases = [
+        *[{**other, "id": 100 + index} for index in range(100)],
+        {
+            **RELEASE,
+            "tag_name": "v1.0.0",
+            "draft": True,
+            "assets": [
+                {
+                    "name": "uploaded.whl",
+                    "digest": "sha256:" + hashlib.sha256(b"wheel").hexdigest(),
+                }
+            ],
+        },
+    ]
 
     result = GitHub(_context(tmp_path, uploaded, missing)).release(
         "octacity-org/demo", "v1.0.0"
     )
 
-    assert result.release_url.endswith("/releases/v1.0.0")
-    assert not any(url == f"{API}/releases" for _, url, _ in api.requests)
+    # The draft is on the second page of the release list.
+    assert f"{API}/releases?per_page=100&page=2" in [url for _, url, _ in api.requests]
+    assert api.calls("POST", f"{API}/releases") == []
     uploads = [url for method, url, _ in api.requests if url.startswith(UPLOADS)]
     assert uploads == [f"{UPLOADS}?name=missing.whl"]
+    assert api.calls("PATCH", f"{API}/releases/7") == [{"draft": False}]
+    assert result.release_url.endswith("/releases/v1.0.0")
 
 
 def test_release_rerun_rejects_conflicting_existing_asset(
     tmp_path: Path,
     api: FakeGitHub,
 ) -> None:
-    api.existing = {
-        "html_url": "https://github.com/octacity-org/demo/releases/v1.0.0",
-        "upload_url": f"{UPLOADS}{{?name,label}}",
-        "assets": [{"name": "app.whl", "digest": "sha256:" + "0" * 64}],
-    }
+    api.releases = [
+        {
+            **RELEASE,
+            "tag_name": "v1.0.0",
+            "draft": True,
+            "assets": [{"name": "app.whl", "digest": "sha256:" + "0" * 64}],
+        }
+    ]
 
     with pytest.raises(TaskFailure, match="app.whl already exists"):
         GitHub(_context(tmp_path, _wheel(tmp_path, "app.whl"))).release(
             "octacity-org/demo", "v1.0.0"
         )
+    assert not any(method == "PATCH" for method, _, _ in api.requests)
+
+
+@pytest.mark.parametrize(
+    ("tag", "prerelease"),
+    [
+        ("v1.2.0", False),
+        ("v1.2.0-rc.1", True),
+        ("1.2.0-alpha", True),
+        ("v1.2.0+build-5", False),
+        ("v1.2.0-beta+build.5", True),
+    ],
+)
+def test_prerelease_tags_follow_semver(tag: str, prerelease: bool) -> None:
+    assert is_prerelease_tag(tag) is prerelease
+
+
+@pytest.mark.parametrize(
+    ("tag", "prerelease"), [("v1.0.0", False), ("v1.1.0-rc.1", True)]
+)
+def test_auto_prerelease_is_derived_from_the_tag(
+    tmp_path: Path,
+    api: FakeGitHub,
+    tag: str,
+    prerelease: bool,
+) -> None:
+    GitHub(_context(tmp_path)).release("octacity-org/demo", tag, prerelease="auto")
+
+    (created,) = api.calls("POST", f"{API}/releases")
+    assert created["prerelease"] is prerelease
 
 
 def test_release_rejects_tag_different_from_pushed_tag(

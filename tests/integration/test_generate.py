@@ -8,6 +8,7 @@ from omniship.cli import runner as cli_runner
 from omniship.cli.app import cli
 from omniship.core.artifact import Artifact, ArtifactSet
 from omniship.core.artifact_bundle import export_artifacts, import_artifacts
+from omniship.core.execution import ExecutionHost
 from omniship.core.stage import Stage
 
 REF_ENV = {
@@ -128,7 +129,7 @@ def test_run_node_uses_reviewed_source_revision_for_imports(
     )
     revisions: list[str | None] = []
 
-    def import_bundles(path: Path, *, expected_revision: str | None):
+    def import_bundles(path: Path, *, expected_revision: str | None, host):
         revisions.append(expected_revision)
         return ArtifactSet()
 
@@ -148,6 +149,43 @@ def test_run_node_uses_reviewed_source_revision_for_imports(
 
     assert result == 0
     assert revisions == ["source-revision"]
+
+
+def test_run_node_matches_platform_variants_except_in_ship(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Check and Build take this host's variant; Ship collects every platform."""
+
+    config = tmp_path / "omniship.yaml"
+    imports = tmp_path / "imports"
+    imports.mkdir()
+    config.write_text(
+        "version: 1\n"
+        "check:\n  verify:\n    uses: core/noop\n"
+        "build:\n  package:\n    uses: core/noop\n"
+        "ship:\n  publish:\n    uses: core/noop\n",
+        encoding="utf-8",
+    )
+    hosts: list[ExecutionHost | None] = []
+
+    def import_bundles(path: Path, *, expected_revision: str | None, host):
+        hosts.append(host)
+        return ArtifactSet()
+
+    monkeypatch.setattr(cli_runner, "import_artifact_bundles", import_bundles)
+    for stage, node in (
+        (Stage.CHECK, "verify"),
+        (Stage.BUILD, "package"),
+        (Stage.SHIP, "publish"),
+    ):
+        result = cli_runner.run_node(
+            stage, node, config_path=str(config), artifact_import_root=str(imports)
+        )
+        assert result == 0
+
+    this_host = ExecutionHost.detect()
+    assert hosts == [this_host, this_host, None]
 
 
 def test_run_node_exports_only_artifacts_it_produced(
@@ -263,23 +301,44 @@ def test_generate_writes_valid_yaml_and_check_detects_drift(tmp_path: Path) -> N
     assert steps[1] == {
         "uses": "astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4"
     }
-    assert {"run": f"uvx --from omniship=={version('omniship')} omniship generate --check"} in steps
+    assert {
+        "run": f"uvx --from omniship=={version('omniship')} omniship generate --check"
+    } in steps
+    # Tests need Ruff, so Ruff hands its bundle to every Tests runner.
     assert {
         "name": "Run Ruff",
         "run": (
             f"uvx --from omniship=={version('omniship')} omniship run-node "
-            "--stage check --node ruff --config omniship.yaml"
+            "--stage check --node ruff --config omniship.yaml "
+            "--export-artifacts .omniship/handoff/check-ruff"
         ),
-        "env": REF_ENV,
+        "env": {**REF_ENV, "OMNISHIP_REVISION": "${{ github.sha }}"},
     } in lint_job["steps"]
+    assert lint_job["steps"][-1]["with"] == {
+        "name": "omniship-check-check-ruff",
+        "path": ".omniship/handoff/check-ruff",
+        "include-hidden-files": "true",
+    }
+    assert {
+        "uses": "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
+        "with": {
+            "pattern": "omniship-check-check-ruff",
+            "path": ".omniship/imports/check-ruff",
+        },
+    } in test_job["steps"]
     assert {
         "name": "Run Tests",
         "run": (
             f"uvx --from omniship=={version('omniship')} omniship run-node "
-            "--stage check --node tests --config omniship.yaml"
+            "--stage check --node tests --config omniship.yaml "
+            "--import-artifacts-root .omniship/imports"
         ),
-        "env": REF_ENV,
+        "env": {**REF_ENV, "OMNISHIP_REVISION": "${{ github.sha }}"},
     } in test_job["steps"]
+    # Nothing needs Tests, so it uploads nothing.
+    assert not any(
+        "upload-artifact" in step.get("uses", "") for step in test_job["steps"]
+    )
     assert {
         "name": "Run Wheel",
         "run": (

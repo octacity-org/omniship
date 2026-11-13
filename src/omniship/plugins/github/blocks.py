@@ -5,6 +5,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
+from typing import Literal
 
 from omniship.core.execution import SecretRef
 from omniship.core.input import runtime_input_reference
@@ -126,10 +127,18 @@ class GitHubRelease:
     notes: str | None = "auto"
     title: str | None = None
     draft: bool = False
-    prerelease: bool | GitHubBooleanInput = False
+    # "auto" marks semver prerelease tags such as v1.2.0-rc.1.
+    prerelease: bool | Literal["auto"] | GitHubBooleanInput = False
     files: tuple[str, ...] = ()
     dry_run: bool = False
     name: str = "github-release"
+
+    def __post_init__(self) -> None:
+        if isinstance(self.prerelease, str) and self.prerelease != "auto":
+            raise WorkflowError(
+                "GitHubRelease prerelease must be a bool, 'auto' or a "
+                f"GitHubBooleanInput, got {self.prerelease!r}"
+            )
 
     def compile(self, stage: Stage, workspace_root: Path) -> list[NodeSpec]:
         if stage != Stage.SHIP:
@@ -153,6 +162,8 @@ class GitHubRelease:
             params["draft"] = True
         if isinstance(self.prerelease, GitHubBooleanInput):
             params["prerelease"] = runtime_input_reference(self.prerelease.name)
+        elif self.prerelease == "auto":
+            params["prerelease"] = "auto"
         elif self.prerelease:
             params["prerelease"] = True
         if self.files:

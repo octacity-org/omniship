@@ -312,15 +312,69 @@ def import_artifacts(
     return artifacts
 
 
+def _artifact_platform(artifact: Artifact) -> Platform:
+    """The explicit tag, else the producing host, else ``Platform.ANY``."""
+
+    if artifact.platform is not None:
+        return artifact.platform
+    host = artifact.provenance.host if artifact.provenance is not None else None
+    return (host.platform if host is not None else None) or Platform.ANY
+
+
+def select_platform_variants(
+    artifacts: ArtifactSet,
+    host: ExecutionHost,
+) -> ArtifactSet:
+    """Keep only ``host``'s variant of artifacts built for several platforms.
+
+    Artifacts sharing a name but built for different platforms are variants,
+    such as one library uploaded by each runner of a matrix task. For those,
+    the variant for ``host``'s platform is kept, else the ``Platform.ANY``
+    one. Artifacts whose name has a single platform are always kept, so a
+    task collecting different files from every runner receives them all.
+    """
+
+    platforms: dict[str, set[Platform]] = {}
+    for artifact in artifacts:
+        platforms.setdefault(artifact.name, set()).add(_artifact_platform(artifact))
+    wanted = host.platform
+    selected = ArtifactSet()
+    for artifact in artifacts:
+        variants = platforms[artifact.name]
+        if len(variants) == 1:
+            selected.add(artifact)
+            continue
+        preferred = (
+            wanted
+            if wanted in variants
+            else Platform.ANY
+            if Platform.ANY in variants
+            else None
+        )
+        if preferred is None:
+            found = ", ".join(sorted(variant.value for variant in variants))
+            raise ValueError(
+                f"Artifact '{artifact.name}' has variants for {found}, but none "
+                f"for this host ({host.os.value}/{host.architecture.value}) "
+                "and none tagged 'any'"
+            )
+        if _artifact_platform(artifact) == preferred:
+            selected.add(artifact)
+    return selected
+
+
 def import_artifact_bundles(
     source: str | Path,
     *,
     expected_revision: str | None = None,
+    host: ExecutionHost | None = None,
 ) -> ArtifactSet:
     """Merge every artifact bundle found recursively below ``source``.
 
     The search stops at each bundle root, so ``manifest.json`` files inside
     artifact contents (web app or extension manifests) are never parsed.
+    With ``host``, artifacts built for several platforms are narrowed to that
+    host's variant (see :func:`select_platform_variants`).
     """
 
     root = Path(source).resolve()
@@ -343,4 +397,6 @@ def import_artifact_bundles(
         ):
             artifacts.add(artifact)
     _validate_revisions(artifacts, expected_revision=expected_revision)
+    if host is not None:
+        return select_platform_variants(artifacts, host)
     return artifacts

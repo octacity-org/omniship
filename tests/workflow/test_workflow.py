@@ -89,6 +89,29 @@ def test_stage_functions_compile_typed_blocks(tmp_path: Path) -> None:
     assert config.ship["github-release"].with_["tag"] == "v1.2.3"
 
 
+def test_github_release_passes_auto_prerelease_to_the_operation(
+    tmp_path: Path,
+) -> None:
+    pipeline = Pipeline()
+
+    @pipeline.ship
+    def ship(stage):
+        stage.task(
+            GitHubRelease(
+                repository="octacity-org/omniship", tag="v1.2.3", prerelease="auto"
+            )
+        )
+
+    config = compile_pipeline(pipeline, tmp_path / "workflow.py")
+
+    assert config.ship["github-release"].with_["prerelease"] == "auto"
+
+
+def test_github_release_rejects_unknown_prerelease_strings() -> None:
+    with pytest.raises(WorkflowError, match="'auto'"):
+        GitHubRelease(tag="v1.2.3", prerelease="yes")
+
+
 def test_github_pages_compiles_as_a_ship_block(tmp_path: Path) -> None:
     pipeline = Pipeline()
 

@@ -110,6 +110,15 @@ class ExecutionHost:
         }.get(normalized_machine, Architecture.UNKNOWN)
         return cls(operating_system, architecture)
 
+    @property
+    def platform(self) -> Platform | None:
+        """The ``Platform`` this host runs, or ``None`` when it is unknown."""
+
+        try:
+            return Platform(f"{self.os.value}/{self.architecture.value}")
+        except ValueError:
+            return None
+
 
 _SECRET_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 

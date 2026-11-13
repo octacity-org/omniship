@@ -160,6 +160,32 @@ def test_golden_file_hands_build_bundles_to_ship_for_version_tags() -> None:
             assert "rules" not in job, name
 
 
+def test_golden_file_hands_check_bundles_only_to_check_dependents() -> None:
+    jobs = yaml.safe_load(GOLDEN.read_text(encoding="utf-8"))
+
+    # check-test needs check-lint, so lint exports and test imports.
+    lint = jobs["check-lint"]
+    assert lint["artifacts"] == {"paths": [".omniship/check-handoff/check-lint"]}
+    assert lint["script"][0].endswith(
+        "--export-artifacts .omniship/check-handoff/check-lint"
+    )
+    assert lint["variables"] == {"OMNISHIP_REVISION": "$CI_COMMIT_SHA"}
+    test = jobs["check-test"]
+    assert test["script"][0].endswith("--import-artifacts-root .omniship/check-handoff")
+    assert test["variables"]["OMNISHIP_EXPECTED_ARTIFACT_REVISION"] == (
+        "$CI_COMMIT_SHA"
+    )
+    # Nothing needs check-test or check-types, so neither exports.
+    for name in ("test", "types"):
+        assert "artifacts" not in jobs[f"check-{name}"]
+        assert "--export-artifacts" not in jobs[f"check-{name}"]["script"][0]
+    assert "variables" not in jobs["check-types"]
+    # Build and Ship read only .omniship/handoff, never Check bundles.
+    for name, job in jobs.items():
+        if isinstance(job, dict) and job.get("stage") in {"build", "ship"}:
+            assert "check-handoff" not in job["script"][0], name
+
+
 def _validate_gitlab_schema(path: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [

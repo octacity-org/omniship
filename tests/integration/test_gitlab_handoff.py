@@ -56,13 +56,17 @@ ship:
 BUILD_REVISION = "a" * 40
 
 
-def _gitlab_jobs(tmp_path: Path) -> dict:
+def _gitlab_jobs(tmp_path: Path, *, forward: tuple[str, ...] = ()) -> dict:
     source = tmp_path / "source"
     source.mkdir()
     config_path = source / "omniship.yaml"
     config_path.write_text(CONFIG, encoding="utf-8")
+    config = load_config_from_file(config_path)
+    # Set from workflow.py in real use; omniship.yaml does not carry it.
+    for name in forward:
+        config.check[name].forward_to_build = True
     (generated,) = GitLabCIGenerator(load_plugins()).generate(
-        load_config_from_file(config_path),
+        config,
         source / "workflow.py",
         config_path,
         Pipeline(targets=[GitLabCI()]),
@@ -179,3 +183,34 @@ def test_check_job_imports_its_check_dependency_bundle(
     handoff = runs / "check-test" / ".omniship" / "check-handoff"
     artifacts = import_artifact_bundles(handoff, expected_revision=BUILD_REVISION)
     assert [artifact.name for artifact in artifacts] == ["out/libzova"]
+
+
+def test_build_jobs_import_forwarded_check_bundles(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    jobs = _gitlab_jobs(tmp_path, forward=("compile",))
+    runs = tmp_path / "runs"
+
+    assert {"job": "check-compile", "artifacts": True} in jobs["build-checksums"][
+        "needs"
+    ]
+    # Ship still reads only Build bundles.
+    assert "check-handoff" not in jobs["ship-publish"]["script"][0]
+    for name in ("check-compile", "build-package", "build-checksums", "ship-publish"):
+        result = _run_job(
+            name, jobs, runs, commit=BUILD_REVISION, monkeypatch=monkeypatch
+        )
+        assert result.exit_code == 0, result.output
+
+    # build-checksums read both its Build dependency and the Check bundle.
+    script = jobs["build-checksums"]["script"][0]
+    assert "--import-artifacts-root .omniship/handoff " in script
+    assert "--import-artifacts-root .omniship/check-handoff " in script
+    restored = runs / "build-checksums" / ".omniship" / "check-handoff"
+    assert [artifact.name for artifact in import_artifact_bundles(restored)] == [
+        "out/libzova"
+    ]
+    # Build exports only what it produced, so Ship never receives Check files.
+    shipped = import_artifact_bundles(runs / "ship-publish" / ".omniship" / "handoff")
+    assert "out/libzova" not in {artifact.name for artifact in shipped}

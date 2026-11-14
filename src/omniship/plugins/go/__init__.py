@@ -16,6 +16,7 @@ from omniship.core.execution import (
     OperatingSystem,
     Platform,
 )
+from omniship.core.input import ref_template
 from omniship.core.stage import Stage
 from omniship.plugins.github import GitHubActionStep
 from omniship.plugins.metadata import OperationDefinition
@@ -330,11 +331,12 @@ class GoBuild:
     def __post_init__(self) -> None:
         relative_file(self.output, field_name="Go build output")
         if any(
-            match not in {"{os}", "{arch}"}
+            match not in {"{os}", "{arch}", "{tag}", "{version}"}
             for match in re.findall(r"\{[^{}]+\}", self.output)
         ):
             raise ValueError(
-                "Go build output supports only {os} and {arch} placeholders"
+                "Go build output supports only {os}, {arch}, {tag} and {version} "
+                "placeholders"
             )
 
     def compile(self, stage: Stage, workspace_root: Path) -> list[NodeSpec]:
@@ -342,8 +344,10 @@ class GoBuild:
             raise WorkflowError("GoBuild can only be used in the build stage")
         output = self.output
         output = _build_output(output, self.target)
+        # {tag} and {version} are filled in from the pushed tag when the
+        # build runs; {os} and {arch} are already filled in for a target.
         params: dict[str, object] = {
-            "output": output,
+            "output": ref_template(output),
             "package": self.package,
         }
         if self.target is not None:
@@ -354,7 +358,7 @@ class GoBuild:
         if self.tags:
             params["tags"] = list(self.tags)
         if self.ldflags is not None:
-            params["ldflags"] = self.ldflags
+            params["ldflags"] = ref_template(self.ldflags)
         if self.trimpath:
             params["trimpath"] = True
         return [NodeSpec(self.name, stage, "go/build", params)]

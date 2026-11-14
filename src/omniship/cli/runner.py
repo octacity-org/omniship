@@ -1,5 +1,6 @@
 import asyncio
 import os
+from collections.abc import Sequence
 from dataclasses import replace
 from importlib.metadata import version as distribution_version
 from pathlib import Path
@@ -124,7 +125,7 @@ def run_node(
     node_id: str,
     config_path: str | None = None,
     console: Console | None = None,
-    artifact_import_root: str | None = None,
+    artifact_import_root: str | Sequence[str] | None = None,
     artifact_export_path: str | None = None,
     working_directory: str | None = None,
 ) -> int:
@@ -181,21 +182,30 @@ def run_node(
         log_sink=ui.emit,
         revision=load_execution_revision(os.environ),
     )
-    if artifact_import_root:
+    import_roots = (
+        [artifact_import_root]
+        if isinstance(artifact_import_root, str)
+        else list(artifact_import_root or ())
+    )
+    if import_roots:
         try:
-            source = Path(artifact_import_root)
-            if not source.is_absolute():
-                source = repository_root / source
-            context.artifacts = import_artifact_bundles(
-                source,
-                expected_revision=(
-                    os.environ.get("OMNISHIP_EXPECTED_ARTIFACT_REVISION")
-                    or context.revision
-                ),
-                # Ship collects every platform's files, for example to
-                # publish them all in one release.
-                host=None if stage == Stage.SHIP else context.host,
-            )
+            # Several roots, for example a GitLab Build job reading both its
+            # Build dependencies and forwarded Check tasks.
+            for root in import_roots:
+                source = Path(root)
+                if not source.is_absolute():
+                    source = repository_root / source
+                for artifact in import_artifact_bundles(
+                    source,
+                    expected_revision=(
+                        os.environ.get("OMNISHIP_EXPECTED_ARTIFACT_REVISION")
+                        or context.revision
+                    ),
+                    # Ship collects every platform's files, for example to
+                    # publish them all in one release.
+                    host=None if stage == Stage.SHIP else context.host,
+                ):
+                    context.artifacts.add(artifact)
         except Exception as exc:
             console.print(f"[bold red]Artifact Import Error:[/bold red] {exc}")
             return 1

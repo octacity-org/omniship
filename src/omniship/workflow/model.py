@@ -146,6 +146,7 @@ class NodeSpec:
     condition: dict[str, Any] | str | None = None
     execution: Any = None
     requirements: tuple[Requirement, ...] = ()
+    forward_to_build: bool = False
 
 
 class Block(Protocol):
@@ -159,6 +160,7 @@ class TaskDeclaration:
     after: tuple[NodeRef, ...] = ()
     execution: Any = None
     requirements: tuple[Requirement, ...] = ()
+    forward_to_build: bool = False
 
 
 @dataclass(frozen=True)
@@ -167,6 +169,7 @@ class BlockDeclaration:
     after: tuple[NodeRef, ...] = ()
     execution: Any = None
     requirements: tuple[Requirement, ...] = ()
+    forward_to_build: bool = False
 
 
 class StageBuilder:
@@ -182,7 +185,12 @@ class StageBuilder:
         name: str | None = None,
         execution: Any = None,
         requires: Iterable[Requirement] = (),
+        forward_to_build: bool = False,
     ) -> Any:
+        # Build normally sees only its own files; this hands the files and
+        # artifacts of a Check task to every Build task.
+        if forward_to_build and self.stage != Stage.CHECK:
+            raise WorkflowError("forward_to_build applies only to check tasks")
         if item is None:
 
             def decorator(function: Callable[[Any], Any]) -> Callable[[Any], Any]:
@@ -193,6 +201,7 @@ class StageBuilder:
                     after=after,
                     execution=execution,
                     requirements=requires,
+                    forward_to_build=forward_to_build,
                 )
 
             return decorator
@@ -204,6 +213,7 @@ class StageBuilder:
                 after=after,
                 execution=execution,
                 requirements=requires,
+                forward_to_build=forward_to_build,
             )
         if name is not None:
             raise WorkflowError("name applies only to imperative tasks")
@@ -213,6 +223,7 @@ class StageBuilder:
             after=after,
             execution=execution,
             requirements=requires,
+            forward_to_build=forward_to_build,
         )
 
 
@@ -309,12 +320,20 @@ class Pipeline:
         after: Iterable[NodeRef | Callable[[Any], Any]],
         execution: Any,
         requirements: Iterable[Requirement],
+        forward_to_build: bool = False,
     ) -> Callable[[Any], Any]:
         ref = NodeRef(name or function.__name__.replace("_", "-"), stage)
         after_refs = tuple(self._resolve_ref(item) for item in after)
         execution = self._validate_execution(ref, execution)
         self._entries[stage].append(
-            TaskDeclaration(function, ref, after_refs, execution, tuple(requirements))
+            TaskDeclaration(
+                function,
+                ref,
+                after_refs,
+                execution,
+                tuple(requirements),
+                forward_to_build,
+            )
         )
         self._task_refs[function] = ref
         self._task_callables[(stage, ref.name)] = function
@@ -328,12 +347,15 @@ class Pipeline:
         after: Iterable[NodeRef | Callable[[Any], Any]],
         execution: Any,
         requirements: Iterable[Requirement],
+        forward_to_build: bool = False,
     ) -> NodeRef:
         ref = NodeRef(self._block_name(block), stage)
         after_refs = tuple(self._resolve_ref(item) for item in after)
         execution = self._validate_execution(ref, execution)
         self._entries[stage].append(
-            BlockDeclaration(block, after_refs, execution, tuple(requirements))
+            BlockDeclaration(
+                block, after_refs, execution, tuple(requirements), forward_to_build
+            )
         )
         return ref
 

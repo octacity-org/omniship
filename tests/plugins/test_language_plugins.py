@@ -1,3 +1,4 @@
+import asyncio
 import os
 import sys
 from pathlib import Path
@@ -15,7 +16,10 @@ from omniship.core.execution import (
     OperatingSystem,
     Platform,
 )
+from omniship.core.executor import StageExecutor
+from omniship.core.node import Node as CoreNode
 from omniship.core.node import NodeInputs
+from omniship.core.result import NodeStatus
 from omniship.core.stage import Stage
 from omniship.plugins.bun import (
     Bun,
@@ -40,6 +44,7 @@ from omniship.plugins.go import (
     GoTest,
     GoToolchain,
     GoVet,
+    register_go_plugin,
 )
 from omniship.plugins.node import (
     Node,
@@ -509,6 +514,60 @@ def test_go_build_expands_target_in_artifact_name(tmp_path: Path) -> None:
     assert block.compile(Stage.BUILD, tmp_path)[0].params["output"] == (
         "dist/tool-windows-arm64.exe"
     )
+
+
+def test_go_build_names_output_and_version_from_the_pushed_tag(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    commands: list[list[str]] = []
+
+    def run(self, arguments, *, env=None):
+        commands.append(list(arguments))
+        output = tmp_path / arguments[arguments.index("-o") + 1]
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(b"binary")
+
+    monkeypatch.setattr(Go, "_run", run)
+    block = GoBuild(
+        output="dist/tool-{version}-{os}-{arch}",
+        target=GoTarget(GoOS.LINUX, GoArch.ARM64),
+        ldflags="-X main.version={version}",
+    )
+    (spec,) = block.compile(Stage.BUILD, tmp_path)
+    registry = PluginRegistry()
+    register_go_plugin(registry)
+    node = CoreNode(
+        id="go-build", stage=Stage.BUILD, operation_name="go/build", inputs=spec.params
+    )
+    context = ExecutionContext(
+        tmp_path,
+        Stage.BUILD,
+        env={"OMNISHIP_REF_TYPE": "tag", "OMNISHIP_REF_NAME": "v2.0.1"},
+    )
+
+    result = asyncio.run(StageExecutor(registry).execute_node(node, context))
+
+    assert result.status == NodeStatus.SUCCESS, result.error_message
+    assert commands == [
+        [
+            "go",
+            "build",
+            "-ldflags",
+            "-X main.version=2.0.1",
+            "-o",
+            "dist/tool-2.0.1-linux-arm64",
+            ".",
+        ]
+    ]
+    # Without placeholders the configuration is unchanged.
+    plain = GoBuild(output="dist/tool", ldflags="-s -w").compile(Stage.BUILD, tmp_path)
+    assert plain[0].params["output"] == "dist/tool"
+    assert plain[0].params["ldflags"] == "-s -w"
+
+
+def test_go_build_output_rejects_unknown_placeholders() -> None:
+    with pytest.raises(ValueError, match="placeholders"):
+        GoBuild(output="dist/tool-{commit}")
 
 
 def test_go_native_windows_build_uses_exe_extension(

@@ -4,6 +4,7 @@ from omniship.operations.python_task import (
     PythonTaskOperation,
     get_python_task_definition,
 )
+from omniship.operations.steps import StepsOperation, get_steps_definition
 from omniship.plugins.registry import PluginRegistry
 
 
@@ -17,3 +18,4 @@ def register_core_plugin(registry: PluginRegistry) -> None:
         get_noop_definition(),
     )
     registry.register_operation(PythonTaskOperation(), get_python_task_definition())
+    registry.register_operation(StepsOperation(registry), get_steps_definition())

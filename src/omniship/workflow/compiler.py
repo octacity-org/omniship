@@ -40,6 +40,7 @@ def compile_pipeline(pipeline: Pipeline, source_path: str | Path) -> OmniShipCon
                         needs=entry.after,
                         execution=entry.execution,
                         requirements=entry.requirements,
+                        forward_to_build=entry.forward_to_build,
                     )
                 )
             elif isinstance(entry, BlockDeclaration):
@@ -61,6 +62,7 @@ def compile_pipeline(pipeline: Pipeline, source_path: str | Path) -> OmniShipCon
                             condition=spec.condition,
                             execution=entry.execution,
                             requirements=requirements,
+                            forward_to_build=entry.forward_to_build,
                         )
                     )
         for spec in specs:
@@ -88,6 +90,7 @@ def compile_pipeline(pipeline: Pipeline, source_path: str | Path) -> OmniShipCon
                 if_=spec.condition,
                 execution=spec.execution,
                 requirements=requirements,
+                forward_to_build=spec.forward_to_build,
             )
 
     return OmniShipConfig(

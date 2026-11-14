@@ -40,6 +40,7 @@ from omniship.plugins.github.dependencies import GitHubActionLock
 from omniship.plugins.registry import PluginRegistry
 from omniship.runtime import TaskContext
 from omniship.workflow.compiler import compile_pipeline
+from omniship.workflow.errors import WorkflowError
 from omniship.workflow.model import (
     GitPluginPackage,
     Pipeline,
@@ -1489,3 +1490,79 @@ def test_run_controls_reject_invalid_values() -> None:
     for days in (0, True, 1.5):
         with pytest.raises(ValueError, match="retention_days"):
             github.job(retention_days=days)
+
+
+def test_forwarded_check_bundles_reach_every_build_job(tmp_path: Path) -> None:
+    github = GitHubActions()
+    pipeline = Pipeline(targets=[github])
+
+    @pipeline.check
+    def check(stage):
+        @stage.task(forward_to_build=True)
+        def native(ctx):
+            pass
+
+        @stage.task(
+            forward_to_build=True,
+            execution=github.job(
+                runners=[GitHubRunner.UBUNTU_24_04, GitHubRunner.MACOS_15]
+            ),
+        )
+        def per_os(ctx):
+            pass
+
+        @stage.task()
+        def lint(ctx):
+            pass
+
+    @pipeline.build
+    def build(stage):
+        @stage.task()
+        def package(ctx):
+            pass
+
+    documents = _generated_documents(tmp_path, pipeline)
+    check_jobs = documents["check.yml"]["jobs"]
+    package = documents["build.yml"]["jobs"]["build-package"]
+
+    def uploads(job: dict) -> list[str]:
+        return [
+            step["with"]["name"]
+            for step in job["steps"]
+            if "upload-artifact" in step.get("uses", "")
+        ]
+
+    assert uploads(check_jobs["check-native"]) == ["omniship-check-check-native"]
+    assert uploads(check_jobs["check-per-os"]) == [
+        "omniship-check-check-per-os.${{ matrix.runner }}"
+    ]
+    assert uploads(check_jobs["check-lint"]) == []
+    downloads = [
+        step["with"]
+        for step in package["steps"]
+        if "download-artifact" in step.get("uses", "")
+    ]
+    assert downloads == [
+        {
+            "pattern": "omniship-check-check-native",
+            "path": ".omniship/imports/check-native",
+        },
+        {
+            "pattern": "omniship-check-check-per-os.*",
+            "path": ".omniship/imports/check-per-os",
+        },
+    ]
+    run = next(step for step in package["steps"] if step.get("name") == "Run Package")
+    assert "--import-artifacts-root .omniship/imports" in run["run"]
+
+
+def test_forward_to_build_applies_only_to_check_tasks(tmp_path: Path) -> None:
+    pipeline = Pipeline(targets=[GitHubActions()])
+
+    with pytest.raises(WorkflowError, match="only to check tasks"):
+
+        @pipeline.build
+        def build(stage):
+            @stage.task(forward_to_build=True)
+            def package(ctx):
+                pass

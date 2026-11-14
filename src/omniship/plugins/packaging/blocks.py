@@ -4,16 +4,28 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
 
+from omniship.core.input import ref_template
 from omniship.core.stage import Stage
 from omniship.workflow.errors import WorkflowError
 from omniship.workflow.model import NodeSpec
 
 
 def _base_name(output: str, suffix: str) -> str:
-    name = Path(output).name
+    # Braces of {tag} or {version} cannot appear in node names.
+    name = Path(output).name.replace("{", "").replace("}", "")
     if name.endswith(suffix):
         name = name[: -len(suffix)]
     return name or "archive"
+
+
+def _archive_params(output: str, files: Mapping[str, str], reproducible: bool) -> dict:
+    """{tag} and {version} are filled in from the pushed tag when it runs."""
+
+    return {
+        "output": ref_template(output),
+        "files": ref_template(dict(files)),
+        "reproducible": reproducible,
+    }
 
 
 @dataclass(frozen=True)
@@ -37,11 +49,7 @@ class TarGz:
         return [NodeSpec(self.name, stage, "packaging/tar-gz", self._params())]
 
     def _params(self) -> dict[str, object]:
-        return {
-            "output": self.output,
-            "files": dict(self.files),
-            "reproducible": self.reproducible,
-        }
+        return _archive_params(self.output, self.files, self.reproducible)
 
 
 @dataclass(frozen=True)
@@ -67,11 +75,7 @@ class Zip:
                 self.name,
                 stage,
                 "packaging/zip",
-                {
-                    "output": self.output,
-                    "files": dict(self.files),
-                    "reproducible": self.reproducible,
-                },
+                _archive_params(self.output, self.files, self.reproducible),
             )
         ]
 

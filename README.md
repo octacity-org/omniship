@@ -155,6 +155,8 @@ flowchart LR
 Stages always run in that order. Every terminal task in one stage must succeed
 before the next stage starts. Dependencies exist only inside a stage; there
 are no edges from an individual Check task to an individual Build task.
+A Check task can still hand its files to Build with `forward_to_build=True`;
+see [Artifacts](#artifacts).
 
 Tasks without dependencies run concurrently. If one task fails, its direct and
 transitive dependents are skipped while unrelated branches continue. A failed
@@ -174,6 +176,52 @@ def check(stage):
     stage.task(Ruff(fix=False))
     stage.task(Pytest(coverage=True, minimum_coverage=90))
 ```
+
+`Command("make dist")` runs a shell command, or an argument list such as
+`Command(["make", "dist"])`, as its own task. It also takes `name`, `cwd`,
+`env`, `artifacts`, and `timeout`.
+
+`Steps(...)` runs several blocks one after another as a single task, so they
+share one CI job and one checkout. Later steps see the files and artifacts of
+earlier ones, and the first failing step stops the rest:
+
+```python
+from omniship import Command, Steps
+from omniship.plugins.go import GoTest, GoToolchain
+from omniship.plugins.zig import ZigToolchain
+
+
+@pipeline.check
+def check(stage):
+    stage.task(
+        Steps(Command("zig build"), GoTest(), name="native-tests"),
+        requires=[ZigToolchain(version="0.15.2"), GoToolchain(version="1.25.4")],
+    )
+```
+
+Each step must be a block that compiles to one task. Steps cannot use `after`,
+conditions, or their own placement; set those on the `Steps` task.
+
+### Tag placeholders
+
+`{tag}` and `{version}` in archive paths and members (`TarGz`, `Zip`), Go
+output paths and linker flags (`GoBuild`), and `Command` arguments, `env`, and
+`artifacts` are filled in from the pushed tag when the task runs. For tag
+`v1.2.0`, `{tag}` is `v1.2.0` and `{version}` is `1.2.0`:
+
+```python
+stage.task(
+    GoBuild(
+        output="dist/tool-{version}-{os}-{arch}",
+        ldflags="-X main.version={version}",
+        target=GoTarget(GoOS.LINUX, GoArch.ARM64),
+    )
+)
+```
+
+A task that uses either placeholder fails when its run was not started by a
+tag push, such as a branch build or a local run without `OMNISHIP_REF_TYPE=tag`
+and `OMNISHIP_REF_NAME` set.
 
 ### Imperative Python tasks
 
@@ -242,7 +290,14 @@ generated GitHub Actions workflows:
 - a dependent Build node downloads its predecessors' bundles;
 - every Ship node receives the completed Build artifacts once each;
 - a Check node that another Check node depends on uploads its bundle, and the
-  dependent Check node downloads it. Check bundles never reach Build or Ship.
+  dependent Check node downloads it;
+- a Check node declared with `stage.task(..., forward_to_build=True)` uploads
+  its bundle, and every Build node downloads it. Use this to build a native
+  library once in Check, test against it, and package the same file in Build.
+
+Other Check bundles never reach Build, and Check bundles never reach Ship.
+Build bundles hold only the files each Build node produced, so forwarded Check
+files reach Ship only when a Build task packages them.
 
 Generated GitLab CI pipelines hand bundles between the same jobs.
 
@@ -748,8 +803,10 @@ supports race detection, a timeout, build tags, and `verbose=True` for
 `go test -v`. `GoBuild` supports
 `cgo_enabled`, tags, linker flags, and `trimpath`; executable suffixes follow
 the requested target or native Windows runner. Output paths may use `{os}` and
-`{arch}` to give each target a distinct artifact name. `GoToolchain(cache=True)` uses
-the Go setup action's module cache, with optional `cache_dependency_path`.
+`{arch}` to give each target a distinct artifact name, and output paths and
+linker flags may use the [tag placeholders](#tag-placeholders).
+`GoToolchain(cache=True)` uses the Go setup action's module cache, with
+optional `cache_dependency_path`.
 For submodules, `GoModule("bindings/go").tag("1.2.0")` produces
 `bindings/go/v1.2.0` for use with `GitHubTag`.
 
@@ -856,7 +913,7 @@ Current operations:
 
 | Provider | Operations |
 | --- | --- |
-| Core | `core/command`, `core/noop`, `core/python` |
+| Core | `core/command`, `core/noop`, `core/python`, `core/steps` |
 | Python | `python/ruff`, `python/pytest`, `python/wheel`, `python/pypi-publish` |
 | Node.js | `node/install`, `node/test`, `node/build`, `node/npm-publish` |
 | Bun | `bun/install`, `bun/test`, `bun/build` |

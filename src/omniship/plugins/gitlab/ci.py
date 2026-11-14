@@ -38,8 +38,8 @@ DEFAULT_IMAGE = "ghcr.io/astral-sh/uv:0.13.8-python3.14-trixie-slim"
 # Build jobs export bundles to <ARTIFACT_PATH>/<job>; GitLab restores job
 # artifacts at the same path, so importers read the whole directory.
 ARTIFACT_PATH = ".omniship/handoff"
-# Check jobs hand bundles only to other Check jobs, from a separate directory
-# so Build and Ship imports can never read them.
+# Check jobs hand bundles to other Check jobs, and to Build jobs only when
+# forwarded, from a separate directory so Ship imports can never read them.
 CHECK_ARTIFACT_PATH = ".omniship/check-handoff"
 EXPECTED_ARTIFACT_REVISION_ENV = "OMNISHIP_EXPECTED_ARTIFACT_REVISION"
 # Matches the GitHub Actions target's ``v*`` tag trigger for Ship.
@@ -244,6 +244,7 @@ class GitLabCIGenerator:
         jobs: dict[str, dict[str, object]] = {}
         root_needs: list[str] = []
         build_jobs: list[str] = []
+        forwarded_checks: list[str] = []
         for stage, nodes in (
             (Stage.CHECK, config.check),
             (Stage.BUILD, config.build),
@@ -256,9 +257,16 @@ class GitLabCIGenerator:
                 gitlab=gitlab,
                 root_needs=root_needs,
                 build_jobs=build_jobs,
+                forwarded_checks=forwarded_checks,
                 omniship_command=omniship_command,
                 pipeline_config=pipeline_config,
             )
+            if stage == Stage.CHECK:
+                forwarded_checks = [
+                    job
+                    for node, job in zip(nodes.values(), stage_jobs, strict=True)
+                    if node.forward_to_build
+                ]
             if stage == Stage.BUILD:
                 build_jobs = stage_jobs
             root_needs = [f"{stage.value}-complete"]
@@ -325,6 +333,7 @@ class GitLabCIGenerator:
         gitlab: GitLabCI,
         root_needs: list[str],
         build_jobs: list[str],
+        forwarded_checks: list[str],
         omniship_command: list[str],
         pipeline_config: Path,
     ) -> list[str]:
@@ -376,22 +385,33 @@ class GitLabCIGenerator:
             needs: list[object] = [
                 job_names[dependency] for dependency in node.needs
             ] or list(root_needs)
-            # GitLab downloads the artifacts of every job in ``needs``, so a
-            # Check or Build job already has its dependencies' bundles.
-            imports_artifacts = stage in {Stage.CHECK, Stage.BUILD} and bool(node.needs)
-            # Build jobs always export; a Check job only when another Check
-            # job needs its files.
-            exports_artifacts = stage == Stage.BUILD or (
-                stage == Stage.CHECK and node_name in depended_on
-            )
             artifact_root = (
                 CHECK_ARTIFACT_PATH if stage == Stage.CHECK else ARTIFACT_PATH
             )
+            # GitLab downloads the artifacts of every job in ``needs``, so a
+            # Check or Build job already has its dependencies' bundles.
+            import_roots = (
+                [artifact_root]
+                if stage in {Stage.CHECK, Stage.BUILD} and node.needs
+                else []
+            )
+            # Build jobs always export; a Check job only when another Check
+            # job needs its files or it forwards them to Build.
+            exports_artifacts = stage == Stage.BUILD or (
+                stage == Stage.CHECK
+                and (node_name in depended_on or node.forward_to_build)
+            )
+            if stage == Stage.BUILD and forwarded_checks:
+                needs.extend(
+                    {"job": name, "artifacts": True} for name in forwarded_checks
+                )
+                import_roots.append(CHECK_ARTIFACT_PATH)
             if stage == Stage.SHIP and build_jobs:
                 needs.extend({"job": name, "artifacts": True} for name in build_jobs)
-                imports_artifacts = True
-            if imports_artifacts:
-                command.extend(["--import-artifacts-root", artifact_root])
+                import_roots.append(artifact_root)
+            imports_artifacts = bool(import_roots)
+            for root in import_roots:
+                command.extend(["--import-artifacts-root", root])
             export_path = f"{artifact_root}/{job_names[node_name]}"
             if exports_artifacts:
                 command.extend(["--export-artifacts", export_path])

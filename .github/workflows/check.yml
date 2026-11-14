@@ -14,6 +14,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        persist-credentials: false
     - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4
     - run: uv sync --all-groups --locked
     - run: uv run omniship generate --check
@@ -23,6 +25,8 @@ jobs:
     runs-on: ubuntu-slim
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        persist-credentials: false
     - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4
     - run: uv sync --all-groups --locked
     - name: Run Ruff
@@ -36,6 +40,8 @@ jobs:
     runs-on: ${{ matrix.runner }}
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        persist-credentials: false
     - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4
     - run: uv sync --all-groups --locked
     - name: Run Pytest
@@ -56,6 +62,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
     - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      with:
+        persist-credentials: false
     - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4
     - run: uv sync --all-groups --locked
     - name: Set up Node.js

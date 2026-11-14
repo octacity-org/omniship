@@ -277,6 +277,9 @@ class GitHubJob:
     after_steps: tuple[GitHubActionStep, ...] = ()
     outputs: tuple[str, ...] = ()
     environment_url: str | None = None
+    # Leave the job's token in the checkout's git config, e.g. for git push.
+    persist_credentials: bool = False
+    retention_days: int | None = None
 
     def __post_init__(self) -> None:
         if not self.runners:
@@ -297,6 +300,14 @@ class GitHubJob:
             raise TypeError("permissions must be a GitHubPermissions value")
         if self.timeout_minutes is not None and not 1 <= self.timeout_minutes <= 360:
             raise ValueError("GitHub job timeout must be between 1 and 360 minutes")
+        if not isinstance(self.persist_credentials, bool):
+            raise TypeError("persist_credentials must be a bool")
+        if self.retention_days is not None and (
+            not isinstance(self.retention_days, int)
+            or isinstance(self.retention_days, bool)
+            or self.retention_days < 1
+        ):
+            raise ValueError("GitHub retention_days must be a positive integer")
         for field_name in ("environment", "working_directory"):
             value = getattr(self, field_name)
             if value is not None and (not isinstance(value, str) or not value):
@@ -862,8 +873,13 @@ class GitHubWorkflow:
     file: str
     name: str
     triggers: Iterable[GitHubTrigger] | None = None
+    # Cancel a run when a newer one starts for the same pull request or
+    # branch. Tag runs are never cancelled.
+    cancel_superseded: bool = False
 
     def __post_init__(self) -> None:
+        if not isinstance(self.cancel_superseded, bool):
+            raise TypeError("cancel_superseded must be a bool")
         if not isinstance(self.file, str) or not self.file:
             raise TypeError("GitHub workflow file must be a non-empty string")
         if "/" in self.file or "\\" in self.file:
@@ -1069,6 +1085,8 @@ class GitHubActions:
         after_steps: Iterable[GitHubActionStep] = (),
         outputs: Iterable[str] = (),
         environment_url: str | None = None,
+        persist_credentials: bool = False,
+        retention_days: int | None = None,
     ) -> GitHubJob:
         selected_runners = (self.default_runner,) if runners is None else tuple(runners)
         return GitHubJob(
@@ -1089,6 +1107,8 @@ class GitHubActions:
             after_steps=tuple(after_steps),
             outputs=tuple(outputs),
             environment_url=environment_url,
+            persist_credentials=persist_credentials,
+            retention_days=retention_days,
         )
 
     @staticmethod
@@ -1212,9 +1232,16 @@ class GitHubActionsGenerator:
             generate_command.extend(["--output", pipeline_config.as_posix()])
         generate_command.append("--check")
 
-        def setup_steps() -> list[dict[str, object]]:
+        def setup_steps(
+            persist_credentials: bool = False,
+        ) -> list[dict[str, object]]:
             steps: list[dict[str, object]] = [
-                {"uses": action_lock.reference("checkout")},
+                {
+                    "uses": action_lock.reference("checkout"),
+                    # Later steps run project code, which must not read the
+                    # job's token from the git config unless asked to.
+                    "with": {"persist-credentials": persist_credentials},
+                },
                 {"uses": action_lock.reference("setup-uv")},
             ]
             if actions.bootstrap == GitHubBootstrap.WORKSPACE:
@@ -1394,7 +1421,7 @@ class GitHubActionsGenerator:
                 if not dependency_jobs:
                     dependency_jobs = [root_dependency]
 
-                steps = setup_steps()
+                steps = setup_steps(placement.persist_credentials)
 
                 def action_step(value: GitHubActionStep) -> dict[str, object]:
                     step: dict[str, object] = {
@@ -1693,6 +1720,11 @@ class GitHubActionsGenerator:
                                 "name": artifact_name,
                                 "path": f"{ARTIFACT_PATH}/{job_id}",
                                 "include-hidden-files": True,
+                                **(
+                                    {}
+                                    if placement.retention_days is None
+                                    else {"retention-days": placement.retention_days}
+                                ),
                             },
                         }
                     )
@@ -1837,30 +1869,54 @@ class GitHubActionsGenerator:
             )
         )
 
-        ship_document: dict[str, object] = {
-            "name": actions.ship.name,
-            "on": workflow_events(
-                actions.ship,
-                (GitHubPush(tags=("v*",)),),
-                is_callable=False,
-            ),
-            "permissions": actions.default_permissions.to_document(),
-            "jobs": ship_jobs,
-        }
-        if pages_nodes:
-            # Queue overlapping runs: cancelling one could stop a release
-            # after some of its packages were already published.
-            ship_document["concurrency"] = {
-                "group": "pages",
-                "cancel-in-progress": False,
+        if pages_nodes and actions.ship.cancel_superseded:
+            raise ValueError(
+                "Ship cannot cancel superseded runs when it deploys GitHub Pages, "
+                "which queues Ship runs instead"
+            )
+
+        def workflow_document(
+            workflow: GitHubWorkflow,
+            events: dict[str, object],
+            jobs: dict[str, dict[str, object]],
+            *,
+            deploys_pages: bool = False,
+        ) -> dict[str, object]:
+            document: dict[str, object] = {
+                "name": workflow.name,
+                "on": events,
+                "permissions": actions.default_permissions.to_document(),
             }
+            if workflow.cancel_superseded:
+                # A called workflow runs with its caller's github context, so
+                # github.workflow names the run that started it. With the
+                # file stem, a called Check or Build never shares a group
+                # with its caller or with a standalone run, which would
+                # cancel or deadlock one of them.
+                stem = Path(workflow.file).stem
+                document["concurrency"] = {
+                    "group": (
+                        f"${{{{ github.workflow }}}}-{stem}-"
+                        "${{ github.event.pull_request.number || github.ref }}"
+                    ),
+                    "cancel-in-progress": "${{ github.ref_type != 'tag' }}",
+                }
+            elif deploys_pages:
+                # Queue overlapping runs: cancelling one could stop a release
+                # after some of its packages were already published.
+                document["concurrency"] = {
+                    "group": "pages",
+                    "cancel-in-progress": False,
+                }
+            document["jobs"] = jobs
+            return document
 
         documents = (
             (
                 actions.check,
-                {
-                    "name": actions.check.name,
-                    "on": workflow_events(
+                workflow_document(
+                    actions.check,
+                    workflow_events(
                         actions.check,
                         (
                             GitHubPullRequest(),
@@ -1868,26 +1924,29 @@ class GitHubActionsGenerator:
                         ),
                         is_callable=True,
                     ),
-                    "permissions": actions.default_permissions.to_document(),
-                    "jobs": check_jobs,
-                },
+                    check_jobs,
+                ),
             ),
             (
                 actions.build,
-                {
-                    "name": actions.build.name,
-                    "on": workflow_events(
-                        actions.build,
-                        (),
-                        is_callable=True,
-                    ),
-                    "permissions": actions.default_permissions.to_document(),
-                    "jobs": build_jobs,
-                },
+                workflow_document(
+                    actions.build,
+                    workflow_events(actions.build, (), is_callable=True),
+                    build_jobs,
+                ),
             ),
             (
                 actions.ship,
-                ship_document,
+                workflow_document(
+                    actions.ship,
+                    workflow_events(
+                        actions.ship,
+                        (GitHubPush(tags=("v*",)),),
+                        is_callable=False,
+                    ),
+                    ship_jobs,
+                    deploys_pages=bool(pages_nodes),
+                ),
             ),
         )
         generated = [GeneratedFile(lock_path, action_lock.render())]

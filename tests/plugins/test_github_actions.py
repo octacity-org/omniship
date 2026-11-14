@@ -1270,3 +1270,127 @@ def test_conditional_nodes_fail_generation(tmp_path: Path) -> None:
             tmp_path / "omniship.yaml",
             Pipeline(targets=[GitHubActions()]),
         )
+
+
+def _generated_documents(
+    tmp_path: Path, pipeline: Pipeline
+) -> dict[str, dict[str, object]]:
+    config = compile_pipeline(pipeline, tmp_path / "workflow.py")
+    generated = GitHubActionsGenerator(PluginRegistry()).generate(
+        config, tmp_path / "workflow.py", tmp_path / "omniship.yaml", pipeline
+    )
+    return {
+        item.path.name: yaml.safe_load(item.content)
+        for item in generated
+        if item.path.suffix == ".yml"
+    }
+
+
+def test_checkout_keeps_credentials_only_when_a_job_asks(tmp_path: Path) -> None:
+    github = GitHubActions()
+    pipeline = Pipeline(targets=[github])
+
+    @pipeline.check
+    def check(stage):
+        @stage.task()
+        def plain(ctx):
+            pass
+
+        @stage.task(execution=github.job(persist_credentials=True))
+        def pushes(ctx):
+            pass
+
+    jobs = _generated_documents(tmp_path, pipeline)["check.yml"]["jobs"]
+
+    def checkout(job: str) -> dict[str, object]:
+        return jobs[job]["steps"][0]
+
+    assert checkout("prepare")["with"] == {"persist-credentials": False}
+    assert checkout("check-plain")["with"] == {"persist-credentials": False}
+    assert checkout("check-pushes")["with"] == {"persist-credentials": True}
+
+
+def test_retention_days_applies_to_the_job_bundle_upload(tmp_path: Path) -> None:
+    github = GitHubActions()
+    pipeline = Pipeline(targets=[github])
+
+    @pipeline.build
+    def build(stage):
+        @stage.task(execution=github.job(retention_days=7))
+        def archives(ctx):
+            pass
+
+        @stage.task()
+        def wheel(ctx):
+            pass
+
+    jobs = _generated_documents(tmp_path, pipeline)["build.yml"]["jobs"]
+
+    def upload(job: str) -> dict[str, object]:
+        return next(
+            step["with"]
+            for step in jobs[job]["steps"]
+            if "upload-artifact" in step.get("uses", "")
+        )
+
+    assert upload("build-archives")["retention-days"] == 7
+    assert "retention-days" not in upload("build-wheel")
+
+
+def test_cancel_superseded_gives_each_workflow_its_own_group(tmp_path: Path) -> None:
+    github = GitHubActions(
+        check=GitHubWorkflow(file="check.yml", name="Check", cancel_superseded=True),
+        build=GitHubWorkflow(file="build.yml", name="Build", cancel_superseded=True),
+    )
+    pipeline = Pipeline(targets=[github])
+
+    @pipeline.check
+    def check(stage):
+        @stage.task()
+        def test(ctx):
+            pass
+
+    documents = _generated_documents(tmp_path, pipeline)
+    ref = "${{ github.event.pull_request.number || github.ref }}"
+
+    # Ship calls Build, which calls Check, all with Ship's github context, so
+    # the file stem keeps the three groups apart.
+    assert documents["check.yml"]["concurrency"] == {
+        "group": f"${{{{ github.workflow }}}}-check-{ref}",
+        "cancel-in-progress": "${{ github.ref_type != 'tag' }}",
+    }
+    assert documents["build.yml"]["concurrency"]["group"] == (
+        f"${{{{ github.workflow }}}}-build-{ref}"
+    )
+    assert "concurrency" not in documents["ship.yml"]
+    assert list(documents["check.yml"])[-2:] == ["concurrency", "jobs"]
+
+
+def test_cancel_superseded_cannot_cancel_a_pages_ship(tmp_path: Path) -> None:
+    config = OmniShipConfig(
+        version=1,
+        ship={"pages": NodeConfig(uses="github/pages", with_={"artifact": "site"})},
+    )
+    actions = GitHubActions(
+        ship=GitHubWorkflow(file="ship.yml", name="Ship", cancel_superseded=True)
+    )
+
+    with pytest.raises(ValueError, match="deploys GitHub Pages"):
+        GitHubActionsGenerator(PluginRegistry()).generate(
+            config,
+            tmp_path / "workflow.py",
+            tmp_path / "omniship.yaml",
+            Pipeline(targets=[actions]),
+        )
+
+
+def test_run_controls_reject_invalid_values() -> None:
+    github = GitHubActions()
+
+    with pytest.raises(TypeError, match="cancel_superseded"):
+        GitHubWorkflow(file="check.yml", name="Check", cancel_superseded="yes")
+    with pytest.raises(TypeError, match="persist_credentials"):
+        github.job(persist_credentials="false")
+    for days in (0, True, 1.5):
+        with pytest.raises(ValueError, match="retention_days"):
+            github.job(retention_days=days)

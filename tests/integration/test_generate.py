@@ -296,7 +296,8 @@ def test_generate_writes_valid_yaml_and_check_detects_drift(tmp_path: Path) -> N
     assert "env" not in ship_job
     steps = prepare_job["steps"]
     assert steps[0] == {
-        "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
+        "uses": "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
+        "with": {"persist-credentials": "false"},
     }
     assert steps[1] == {
         "uses": "astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4"
@@ -1382,7 +1383,8 @@ def test_generate_uses_action_versions_from_omniship_lock(tmp_path: Path) -> Non
         Loader=yaml.BaseLoader,
     )
     assert check["jobs"]["prepare"]["steps"][0] == {
-        "uses": f"actions/checkout@{custom_sha}"
+        "uses": f"actions/checkout@{custom_sha}",
+        "with": {"persist-credentials": "false"},
     }
 
 

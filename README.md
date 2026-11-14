@@ -329,6 +329,10 @@ github = GitHubActions(
 )
 ```
 
+`GitHubWorkflow(..., cancel_superseded=True)` cancels a run when a newer one
+starts for the same pull request or branch. Runs for tags are never cancelled.
+Ship cannot use it together with GitHub Pages, which queues Ship runs instead.
+
 Generated jobs run the OmniShip version recorded in `omniship.lock` as an
 isolated `uvx` tool. The target repository does not need to be a Python or uv
 project; its language dependencies are installed by task requirements and
@@ -470,7 +474,15 @@ def check(stage):
 
 `github.job(...)` also accepts a `GitHubContainer`, service containers,
 `before_steps` and `after_steps` made from locked `GitHubActionStep` values,
-and an `environment_url`. A task can publish a small value to a dependent job
+and an `environment_url`. Its `retention_days` sets how long GitHub keeps the
+job's uploaded artifacts.
+
+The repository checkout in every generated job drops its credentials, so
+later steps cannot read the job's token from the git configuration. A task
+that runs git commands needing that token, such as `git push`, can keep them
+with `github.job(persist_credentials=True)`.
+
+A task can publish a small value to a dependent job
 by declaring `outputs=["version"]` on its job and calling
 `ctx.outputs.set("version", value)` in its imperative function. The dependent
 task must use `after=[producer]`; it can then pass

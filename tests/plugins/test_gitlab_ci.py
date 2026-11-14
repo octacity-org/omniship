@@ -362,6 +362,52 @@ def test_job_names_cannot_collide_with_the_stage_gate(tmp_path: Path) -> None:
         _generate(tmp_path, config, Pipeline(targets=[GitLabCI()]))
 
 
+def test_overrides_and_extra_jobs_edit_the_generated_yaml(tmp_path: Path) -> None:
+    config = OmniShipConfig(version=1, ship={"publish": NodeConfig(uses="core/noop")})
+    gitlab = GitLabCI(
+        overrides={
+            "ship-publish.when": "manual",
+            "ship-publish.script.-": "echo published",
+            "variables.UV_LINK_MODE": None,
+        },
+        extra_jobs={
+            "notify": {"stage": "ship", "needs": ["ship-publish"], "script": ["true"]}
+        },
+    )
+
+    document = _document(tmp_path, config, Pipeline(targets=[gitlab]))
+
+    assert document["ship-publish"]["when"] == "manual"
+    assert document["ship-publish"]["script"][-1] == "echo published"
+    assert "UV_LINK_MODE" not in document["variables"]
+    assert list(document)[-1] == "notify"
+    assert document["notify"]["needs"] == ["ship-publish"]
+
+
+@pytest.mark.parametrize(
+    ("gitlab", "message"),
+    [
+        (GitLabCI(overrides={"ship-pubish.when": "manual"}), "override 'ship-pubish"),
+        (GitLabCI(extra_jobs={"stages": {"script": ["x"]}}), "extra job 'stages'"),
+        (GitLabCI(extra_jobs={"build-complete": {}}), "extra job 'build-complete'"),
+    ],
+)
+def test_escape_hatches_name_the_problem(
+    tmp_path: Path, gitlab: GitLabCI, message: str
+) -> None:
+    config = OmniShipConfig(version=1, ship={"publish": NodeConfig(uses="core/noop")})
+
+    with pytest.raises(ValueError, match=f".gitlab-ci.yml {message}"):
+        _generate(tmp_path, config, Pipeline(targets=[gitlab]))
+
+
+def test_escape_hatches_reject_invalid_values() -> None:
+    with pytest.raises(TypeError, match="overrides"):
+        GitLabCI(overrides=["ship-publish.when"])
+    with pytest.raises(TypeError, match="extra_jobs"):
+        GitLabCI(extra_jobs={"notify": ["true"]})
+
+
 def test_foreign_placements_owned_by_gitlab_are_rejected(tmp_path: Path) -> None:
     class Impostor:
         target = "gitlab/ci"

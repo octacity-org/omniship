@@ -21,6 +21,12 @@ from omniship.core.execution import (
 )
 from omniship.core.stage import Stage
 from omniship.plugins.api import CONDITION_UNSUPPORTED, GeneratedFile
+from omniship.plugins.overrides import (
+    add_extra_jobs,
+    apply_overrides,
+    normalize_extra_jobs,
+    normalize_overrides,
+)
 from omniship.plugins.registry import PluginRegistry
 from omniship.workflow.model import GitPluginPackage, Pipeline, PluginPackage
 
@@ -97,10 +103,21 @@ class GitLabCI:
 
     name: ClassVar[str] = "gitlab/ci"
     image: str = DEFAULT_IMAGE
+    # Escape hatches for what OmniShip does not model yet: raw YAML set at a
+    # path in `.gitlab-ci.yml`, and raw jobs added beside the generated ones.
+    # Neither is validated by OmniShip.
+    overrides: Mapping[str | tuple[str | int, ...], object] = field(
+        default_factory=dict
+    )
+    extra_jobs: Mapping[str, Mapping[str, object]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not isinstance(self.image, str) or not self.image.strip():
             raise TypeError("GitLab CI image must be a non-empty string")
+        normalize_overrides(self.overrides)
+        normalize_extra_jobs(self.extra_jobs)
+        object.__setattr__(self, "overrides", dict(self.overrides))
+        object.__setattr__(self, "extra_jobs", dict(self.extra_jobs))
 
     @property
     def default_job(self) -> GitLabJob:
@@ -279,6 +296,14 @@ class GitLabCIGenerator:
             },
             **jobs,
         }
+        # GitLab jobs are top-level keys, so an extra job cannot reuse a
+        # generated job's name or a keyword such as `stages`.
+        add_extra_jobs(
+            document, normalize_extra_jobs(gitlab.extra_jobs), CONFIG_FILENAME
+        )
+        document = apply_overrides(
+            document, normalize_overrides(gitlab.overrides), CONFIG_FILENAME
+        )
         rendered = yaml.safe_dump(
             document,
             sort_keys=False,

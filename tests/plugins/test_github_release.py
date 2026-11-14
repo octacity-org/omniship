@@ -276,3 +276,44 @@ def test_release_file_references_match_whole_path_segments(
 
     uploads = [url for method, url, _ in api.requests if url.startswith(UPLOADS)]
     assert uploads == [f"{UPLOADS}?name=app.whl"]
+
+
+def test_release_file_reference_prefers_an_exact_name(
+    tmp_path: Path,
+    api: FakeGitHub,
+) -> None:
+    (tmp_path / "linux").mkdir()
+    shadow = tmp_path / "linux" / "tool"
+    shadow.write_bytes(b"linux")
+    wanted = tmp_path / "tool-any"
+    wanted.write_bytes(b"any")
+    context = _context(
+        tmp_path,
+        Artifact.from_path(shadow, name="tool-linux"),
+        Artifact.from_path(wanted, name="tool"),
+    )
+
+    GitHub(context).release("octacity-org/demo", "v1.0.0", files=["tool"])
+
+    uploads = [url for method, url, _ in api.requests if url.startswith(UPLOADS)]
+    assert uploads == [f"{UPLOADS}?name=tool"]
+
+
+def test_release_rejects_duplicate_asset_names_before_creating_a_draft(
+    tmp_path: Path,
+    api: FakeGitHub,
+) -> None:
+    variants = []
+    for runner in ("linux", "macos"):
+        (tmp_path / runner).mkdir()
+        path = tmp_path / runner / "tool"
+        path.write_bytes(runner.encode())
+        variants.append(Artifact.from_path(path))
+
+    with pytest.raises(TaskFailure, match="unique names.*named tool"):
+        GitHub(_context(tmp_path, *variants)).release("octacity-org/demo", "v1.0.0")
+    with pytest.raises(TaskFailure, match="matches 2 artifacts"):
+        GitHub(_context(tmp_path, *variants)).release(
+            "octacity-org/demo", "v1.0.0", files=["tool"]
+        )
+    assert api.requests == []

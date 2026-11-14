@@ -64,7 +64,9 @@ def evaluate_condition(condition: Any, context: ExecutionContext) -> bool:
         if "env" in condition and isinstance(condition["env"], dict):
             for k, v in condition["env"].items():
                 curr = os.environ.get(k) or context.env.get(k)
-                if curr != str(v):
+                # YAML reads ``CI: true`` as a boolean; CI sets "true".
+                expected = str(v).lower() if isinstance(v, bool) else str(v)
+                if curr != expected:
                     return False
 
         if "branch" in condition:

@@ -33,6 +33,14 @@ class GeneratedFile:
     content: str
 
 
+# Each CI job runs one node on its own, so a node skipped by its condition
+# could not skip the jobs that depend on it.
+CONDITION_UNSUPPORTED = (
+    "has a condition, which generated CI jobs cannot apply: jobs that "
+    "depend on it would still run when it is skipped"
+)
+
+
 class WorkflowGenerator(Protocol):
     name: str
 

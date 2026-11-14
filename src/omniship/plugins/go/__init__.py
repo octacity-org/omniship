@@ -10,7 +10,12 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from omniship.core.execution import Architecture, ExecutionHost, OperatingSystem
+from omniship.core.execution import (
+    Architecture,
+    ExecutionHost,
+    OperatingSystem,
+    Platform,
+)
 from omniship.core.stage import Stage
 from omniship.plugins.github import GitHubActionStep
 from omniship.plugins.metadata import OperationDefinition
@@ -73,6 +78,12 @@ class GoTarget:
     @property
     def environment(self) -> dict[str, str]:
         return {"GOOS": self.os.value, "GOARCH": self.arch.value}
+
+    @property
+    def platform(self) -> Platform | None:
+        """The artifact platform this target builds for, if OmniShip names it."""
+
+        return ExecutionHost.from_platform(self.os.value, self.arch.value).platform
 
 
 @dataclass(frozen=True, slots=True)
@@ -241,7 +252,10 @@ class Go(ToolFacade):
             command,
             env=environment,
         )
-        self.context.artifacts.add(output)
+        # A cross-compiled file is for the target, not the runner.
+        self.context.artifacts.add(
+            output, platform=None if target is None else target.platform
+        )
 
 
 @dataclass(frozen=True)

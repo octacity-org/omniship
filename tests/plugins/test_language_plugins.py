@@ -13,6 +13,7 @@ from omniship.core.execution import (
     ExecutionHost,
     IdentityToken,
     OperatingSystem,
+    Platform,
 )
 from omniship.core.node import NodeInputs
 from omniship.core.stage import Stage
@@ -419,7 +420,8 @@ def test_go_facade_constructs_check_and_cross_build_commands(
 
     monkeypatch.setattr(Go, "_run", run)
     (tmp_path / "main.go").write_text("package main\n", encoding="utf-8")
-    go = Go(TaskContext(tmp_path, {}))
+    context = TaskContext(tmp_path, {})
+    go = Go(context)
     go.fmt()
     go.mod_download()
     go.vet(packages=("./cmd/...",))
@@ -457,6 +459,14 @@ def test_go_facade_constructs_check_and_cross_build_commands(
             {"GOOS": "windows", "GOARCH": "amd64", "CGO_ENABLED": "0"},
         ),
     ]
+    # Tagged with the target, so a Linux runner's cross-build is not
+    # mistaken for a Linux file.
+    assert [item.platform for item in context.artifacts] == [Platform.WINDOWS_X86_64]
+
+
+def test_go_target_platform_names_only_known_platforms() -> None:
+    assert GoTarget(GoOS.DARWIN, GoArch.ARM64).platform == Platform.MACOS_ARM64
+    assert GoTarget(GoOS.WASIP1, GoArch.WASM).platform is None
 
 
 def test_go_build_uses_target_file_extension(tmp_path: Path) -> None:

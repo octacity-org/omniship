@@ -20,7 +20,7 @@ from omniship.core.execution import (
     placement_for,
 )
 from omniship.core.stage import Stage
-from omniship.plugins.api import GeneratedFile
+from omniship.plugins.api import CONDITION_UNSUPPORTED, GeneratedFile
 from omniship.plugins.registry import PluginRegistry
 from omniship.workflow.model import GitPluginPackage, Pipeline, PluginPackage
 
@@ -325,6 +325,8 @@ class GitLabCIGenerator:
         }
         terminal: list[str] = []
         for node_name, node in nodes.items():
+            if node.condition is not None:
+                raise ValueError(f"Node '{node_name}' {CONDITION_UNSUPPORTED}")
             placement = (
                 placement_for(node.execution, GitLabCI.name) or gitlab.default_job
             )

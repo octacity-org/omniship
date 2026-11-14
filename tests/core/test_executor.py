@@ -343,3 +343,13 @@ async def test_condition_skips_are_not_reported_as_failures(
     await StageExecutor(registry=registry).execute_stage(graph, context)
 
     assert context.results["leaf"].error_message == "Dependency 'middle' was skipped"
+
+
+def test_env_condition_matches_yaml_booleans(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("OMNISHIP_TEST_FLAG", "true")
+    context = ExecutionContext(workspace_root=tmp_path, stage=Stage.CHECK)
+
+    assert evaluate_condition({"env": {"OMNISHIP_TEST_FLAG": True}}, context) is True
+    assert evaluate_condition({"env": {"OMNISHIP_TEST_FLAG": False}}, context) is False

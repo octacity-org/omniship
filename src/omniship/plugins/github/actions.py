@@ -13,7 +13,7 @@ import yaml
 from omniship.config.models import NodeConfig, OmniShipConfig
 from omniship.core.execution import CacheSpec, SecretRef, placement_for
 from omniship.core.stage import Stage
-from omniship.plugins.api import GeneratedFile
+from omniship.plugins.api import CONDITION_UNSUPPORTED, GeneratedFile
 from omniship.plugins.registry import PluginRegistry
 from omniship.workflow.model import GitPluginPackage, Pipeline
 
@@ -1262,6 +1262,8 @@ class GitHubActionsGenerator:
             generated_jobs: dict[str, dict[str, object]] = {}
             terminal_job_ids: list[str] = []
             for node_name, node in nodes.items():
+                if node.condition is not None:
+                    raise ValueError(f"Node '{node_name}' {CONDITION_UNSUPPORTED}")
                 job_id = job_ids[node_name]
                 dependency_jobs = [job_ids[dependency] for dependency in node.needs]
                 if not dependency_jobs:
@@ -1846,9 +1848,11 @@ class GitHubActionsGenerator:
             "jobs": ship_jobs,
         }
         if pages_nodes:
+            # Queue overlapping runs: cancelling one could stop a release
+            # after some of its packages were already published.
             ship_document["concurrency"] = {
                 "group": "pages",
-                "cancel-in-progress": True,
+                "cancel-in-progress": False,
             }
 
         documents = (

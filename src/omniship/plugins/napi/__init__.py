@@ -16,6 +16,7 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field
 
 from omniship.core.artifact import Artifact
+from omniship.core.execution import ExecutionHost, Platform
 from omniship.core.stage import Stage
 from omniship.plugins.metadata import OperationDefinition
 from omniship.plugins.registry import PluginRegistry
@@ -57,6 +58,14 @@ class _PackageConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
     artifacts: tuple[str, ...] = Field(min_length=1)
     output: str = "dist/npm"
+
+
+def _target_platform(target: str) -> Platform | None:
+    """The platform of a Rust target triple such as ``aarch64-apple-darwin``."""
+
+    architecture, *rest = target.split("-")
+    system = next((part for part in rest if part in {"linux", "darwin", "windows"}), "")
+    return ExecutionHost.from_platform(system, architecture).platform
 
 
 class Napi(ToolFacade):
@@ -103,7 +112,11 @@ class Napi(ToolFacade):
                 raise TaskFailure("NAPI-RS produced no native .node binary")
             result = destination / f"{cfg.target}-{uuid4().hex}"
             shutil.copytree(temporary, result)
-        return self.context.artifacts.add(result, name=f"napi-{cfg.target}")
+        return self.context.artifacts.add(
+            result,
+            name=f"napi-{cfg.target}",
+            platform=_target_platform(cfg.target),
+        )
 
     def package(
         self, *, artifacts: tuple[str, ...], output: str = "dist/npm"

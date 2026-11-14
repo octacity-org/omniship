@@ -1255,3 +1255,18 @@ def test_github_permissions_add_missing_typed_block_requirements() -> None:
         "contents": "write",
         "packages": "write",
     }
+
+
+def test_conditional_nodes_fail_generation(tmp_path: Path) -> None:
+    config = OmniShipConfig(
+        version=1,
+        build={"package": NodeConfig(uses="core/noop", if_={"branch": "main"})},
+    )
+
+    with pytest.raises(ValueError, match="Node 'package' has a condition"):
+        GitHubActionsGenerator(PluginRegistry()).generate(
+            config,
+            tmp_path / "workflow.py",
+            tmp_path / "omniship.yaml",
+            Pipeline(targets=[GitHubActions()]),
+        )

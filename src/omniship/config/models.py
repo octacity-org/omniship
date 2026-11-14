@@ -15,6 +15,9 @@ class NodeConfig(BaseModel):
     when: dict[str, Any] | None = Field(default=None)
     execution: Any = Field(default=None, exclude=True)
     requirements: tuple[Any, ...] = Field(default=(), exclude=True)
+    # Check only: Build jobs import this task's artifacts. Like execution, it
+    # shapes the generated CI files and is not written to omniship.yaml.
+    forward_to_build: bool = Field(default=False, exclude=True)
 
     @property
     def condition(self) -> dict[str, Any] | str | None:

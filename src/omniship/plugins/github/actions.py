@@ -851,6 +851,11 @@ class GitHubActionStep:
         object.__setattr__(self, "inputs", dict(self.inputs))
 
 
+def _job_id(stage: Stage, node_name: str) -> str:
+    normalized = re.sub(r"[^a-zA-Z0-9_-]+", "-", node_name).strip("-").lower()
+    return f"{stage.value}-{normalized}"
+
+
 def _splits_artifacts(placement: object) -> bool:
     """Whether a job uploads one handoff artifact per matrix entry."""
 
@@ -1288,10 +1293,7 @@ class GitHubActionsGenerator:
             job_ids: dict[str, str] = {}
             used_job_ids: set[str] = set()
             for node_name in nodes:
-                normalized = (
-                    re.sub(r"[^a-zA-Z0-9_-]+", "-", node_name).strip("-").lower()
-                )
-                job_id = f"{stage.value}-{normalized}"
+                job_id = _job_id(stage, node_name)
                 if job_id in used_job_ids:
                     raise ValueError(
                         f"GitHub Actions job id collision for node "
@@ -1603,10 +1605,12 @@ class GitHubActionsGenerator:
                 ]
 
                 # Build tasks always export; a Check task exports only when
-                # another Check task needs its files. Check bundles are named
-                # omniship-check-*, so Ship's omniship-build-* never sees them.
+                # another Check task needs its files or it forwards them to
+                # Build. Check bundles are named omniship-check-*, so Ship's
+                # omniship-build-* never sees them.
                 exports_artifacts = stage == Stage.BUILD or (
-                    stage == Stage.CHECK and node_name in depended_on
+                    stage == Stage.CHECK
+                    and (node_name in depended_on or node.forward_to_build)
                 )
                 imports_dependency_bundles = False
                 if stage in {Stage.CHECK, Stage.BUILD} and node.needs:
@@ -1631,6 +1635,32 @@ class GitHubActionsGenerator:
                                 "with": {
                                     "pattern": dependency_pattern,
                                     "path": f"{ARTIFACT_IMPORT_PATH}/{dependency_job}",
+                                },
+                            }
+                        )
+                        imports_dependency_bundles = True
+                if stage == Stage.BUILD:
+                    # Check runs earlier in the same workflow run, so its
+                    # uploads are available here.
+                    for check_name, check_node in config.check.items():
+                        if (
+                            not check_node.forward_to_build
+                            or check_node.uses == "github/external-workflow"
+                        ):
+                            continue
+                        check_job = _job_id(Stage.CHECK, check_name)
+                        check_pattern = f"omniship-check-{check_job}"
+                        if _splits_artifacts(
+                            placement_for(check_node.execution, GitHubActions.name)
+                            or actions.default_job
+                        ):
+                            check_pattern += ".*"
+                        steps.append(
+                            {
+                                "uses": action_lock.reference("download-artifact"),
+                                "with": {
+                                    "pattern": check_pattern,
+                                    "path": f"{ARTIFACT_IMPORT_PATH}/{check_job}",
                                 },
                             }
                         )

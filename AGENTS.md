@@ -24,6 +24,7 @@ Agents working on this codebase must adhere to the following architectural invar
    - The stage is marked failed, preventing subsequent stages from starting.
 4. **First-Class Artifacts**:
    - Artifacts produced during `BUILD` are verified on disk, normalized as `Artifact` objects, stored in `ExecutionContext.artifacts` (`ArtifactSet`), and forwarded to `SHIP` operations.
+   - `CHECK` artifacts reach `BUILD` only from tasks declared with `forward_to_build=True`; this is a stage-level handoff, not a DAG edge.
 
 ---
 

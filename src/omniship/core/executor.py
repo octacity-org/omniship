@@ -10,7 +10,11 @@ from typing import Any, Protocol
 from omniship.core.context import ExecutionContext
 from omniship.core.execution import REF_NAME_ENV, REF_TYPE_ENV
 from omniship.core.graph import StageGraph
-from omniship.core.input import RuntimeInputError, resolve_runtime_inputs
+from omniship.core.input import (
+    RuntimeInputError,
+    resolve_ref_templates,
+    resolve_runtime_inputs,
+)
 from omniship.core.node import Node, NodeInputs
 from omniship.core.result import NodeResult, NodeStatus
 from omniship.core.stage import Stage
@@ -138,7 +142,10 @@ class StageExecutor:
             )
 
         try:
-            resolved_params = resolve_runtime_inputs(dict(node.inputs), context.inputs)
+            resolved_params = resolve_ref_templates(
+                resolve_runtime_inputs(dict(node.inputs), context.inputs),
+                {**os.environ, **context.env},
+            )
         except RuntimeInputError as exc:
             return NodeResult(
                 status=NodeStatus.FAILED,

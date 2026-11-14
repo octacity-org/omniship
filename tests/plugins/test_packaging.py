@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import stat
 import tarfile
@@ -7,7 +8,19 @@ from pathlib import Path
 import pytest
 
 from omniship.core.artifact import Artifact
-from omniship.plugins.packaging import Archive, Checksums
+from omniship.core.context import ExecutionContext
+from omniship.core.executor import StageExecutor
+from omniship.core.node import Node
+from omniship.core.result import NodeStatus
+from omniship.core.stage import Stage
+from omniship.plugins.packaging import (
+    Archive,
+    Checksums,
+    TarGz,
+    Zip,
+    register_packaging_plugin,
+)
+from omniship.plugins.registry import PluginRegistry
 from omniship.runtime import TaskContext, TaskFailure
 
 
@@ -86,3 +99,60 @@ def test_checksums_creates_a_sorted_sha256_manifest(tmp_path: Path) -> None:
         f"{hashlib.sha256(b'b').hexdigest()}  b.txt\n"
     )
     assert manifest in context.artifacts.values
+
+
+@pytest.mark.parametrize(
+    ("block_type", "suffix", "operation"),
+    [(TarGz, ".tar.gz", "packaging/tar-gz"), (Zip, ".zip", "packaging/zip")],
+)
+def test_archive_blocks_name_files_from_the_pushed_tag(
+    tmp_path: Path, block_type: type, suffix: str, operation: str
+) -> None:
+    binary = tmp_path / "build" / "demo"
+    binary.parent.mkdir()
+    binary.write_bytes(b"binary")
+    block = block_type(
+        output=f"dist/demo-{{version}}{suffix}", files={"build/demo": "demo-{tag}/demo"}
+    )
+    (spec,) = block.compile(Stage.BUILD, tmp_path)
+    registry = PluginRegistry()
+    register_packaging_plugin(registry)
+    context = ExecutionContext(
+        tmp_path,
+        Stage.BUILD,
+        env={"OMNISHIP_REF_TYPE": "tag", "OMNISHIP_REF_NAME": "v3.1.0"},
+    )
+
+    result = asyncio.run(
+        StageExecutor(registry).execute_node(
+            Node(
+                id=spec.name,
+                stage=Stage.BUILD,
+                operation_name=operation,
+                inputs=spec.params,
+            ),
+            context,
+        )
+    )
+
+    assert result.status == NodeStatus.SUCCESS, result.error_message
+    # Braces cannot appear in node names, so the name keeps the words.
+    assert spec.name == f"demo-version-{suffix.lstrip('.').replace('.', '-')}"
+    (artifact,) = result.artifacts
+    assert artifact.path == tmp_path / f"dist/demo-3.1.0{suffix}"
+    if suffix == ".zip":
+        assert zipfile.ZipFile(artifact.path).namelist() == ["demo-v3.1.0/demo"]
+    else:
+        assert tarfile.open(artifact.path).getnames() == ["demo-v3.1.0/demo"]
+
+
+def test_archive_blocks_without_placeholders_compile_unchanged(tmp_path: Path) -> None:
+    (spec,) = TarGz(output="dist/demo.tar.gz", files={"a": "b"}).compile(
+        Stage.BUILD, tmp_path
+    )
+
+    assert spec.params == {
+        "output": "dist/demo.tar.gz",
+        "files": {"a": "b"},
+        "reproducible": True,
+    }

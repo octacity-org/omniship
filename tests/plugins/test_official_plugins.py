@@ -37,6 +37,7 @@ def test_official_plugins_have_independent_registration_boundaries() -> None:
         "core/command",
         "core/noop",
         "core/python",
+        "core/steps",
     }
 
     python = PluginRegistry()

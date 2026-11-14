@@ -1,11 +1,13 @@
 from omniship.core.execution import Platform
 from omniship.core.logging import Logging, LogLevel
 from omniship.workflow import (
+    Command,
     GitPluginPackage,
     Pipeline,
     PluginIndex,
     PluginPackage,
     StageBuilder,
+    Steps,
 )
 
 
@@ -14,6 +16,7 @@ def main() -> None:
 
 
 __all__ = [
+    "Command",
     "GitPluginPackage",
     "LogLevel",
     "Logging",
@@ -22,4 +25,5 @@ __all__ = [
     "PluginIndex",
     "PluginPackage",
     "StageBuilder",
+    "Steps",
 ]

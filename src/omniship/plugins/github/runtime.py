@@ -6,6 +6,7 @@ import shutil
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections import Counter
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -254,11 +255,22 @@ class GitHub:
                     )
                 else:
                     selected.append(artifact)
-            return selected
+            return self._unique_asset_names(selected)
 
         selected = []
         for file_ref in files:
-            artifact = next((item for item in available if item.matches(file_ref)), None)
+            named = [item for item in available if item.name == file_ref]
+            if len(named) > 1:
+                raise TaskFailure(
+                    f"Release file '{file_ref}' matches {len(named)} artifacts "
+                    "with that name; give each platform's file its own name"
+                )
+            # An exact name wins over a path match.
+            artifact = (
+                named[0]
+                if named
+                else next((item for item in available if item.matches(file_ref)), None)
+            )
             if artifact is not None:
                 selected.append(artifact)
                 continue
@@ -274,7 +286,21 @@ class GitHub:
                     f"Release asset '{artifact.name}' must be a file; "
                     "archive directories before releasing them"
                 )
-        return selected
+        return self._unique_asset_names(selected)
+
+    @staticmethod
+    def _unique_asset_names(artifacts: list[Artifact]) -> list[Artifact]:
+        # GitHub rejects a second asset with the same name. Failing before the
+        # draft exists avoids a draft that every re-run fails to complete.
+        counts = Counter(artifact.name for artifact in artifacts)
+        duplicates = sorted(name for name, count in counts.items() if count > 1)
+        if duplicates:
+            raise TaskFailure(
+                "Release assets need unique names, but several artifacts are "
+                f"named {', '.join(duplicates)}; give each platform's file its "
+                "own name or archive it per platform"
+            )
+        return artifacts
 
     def _log_dry_run(
         self,

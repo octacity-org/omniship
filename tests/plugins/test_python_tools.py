@@ -1,6 +1,8 @@
+import io
 import json
 import os
 import sys
+import tarfile
 from pathlib import Path
 
 import pytest
@@ -107,3 +109,32 @@ def test_python_publish_requires_distributions(tmp_path: Path) -> None:
     # Without files uv would publish whatever is in dist/, which may be stale.
     with pytest.raises(TaskFailure, match="No Python distributions"):
         python.publish(dry_run=True)
+
+
+def _tar_gz(path: Path, *members: str) -> Path:
+    with tarfile.open(path, "w:gz") as archive:
+        for member in members:
+            info = tarfile.TarInfo(member)
+            archive.addfile(info, io.BytesIO(b""))
+    return path
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX fake executable")
+def test_python_publish_selects_only_python_distributions(
+    tmp_path: Path,
+    uv_calls: Path,
+) -> None:
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    wheel = workspace / "demo-1.0-py3-none-any.whl"
+    wheel.write_bytes(b"wheel")
+    sdist = _tar_gz(workspace / "demo-1.0.tar.gz", "demo-1.0/PKG-INFO")
+    cli = _tar_gz(workspace / "tool-1.0-linux-amd64.tar.gz", "tool-1.0/bin/tool")
+    context = TaskContext(workspace, dict(os.environ))
+    for path in (wheel, sdist, cli):
+        context.artifacts.add(path)
+
+    Python(context).publish(dry_run=True)
+
+    (call,) = _calls(uv_calls)
+    assert call == ["publish", str(wheel), str(sdist), "--dry-run"]

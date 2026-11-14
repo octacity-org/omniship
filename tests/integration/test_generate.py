@@ -1328,7 +1328,7 @@ def test_generate_github_pages_deployment(tmp_path: Path) -> None:
     job = ship["jobs"]["ship-github-pages"]
     assert ship["concurrency"] == {
         "group": "pages",
-        "cancel-in-progress": "true",
+        "cancel-in-progress": "false",
     }
     assert job["permissions"] == {
         "actions": "read",

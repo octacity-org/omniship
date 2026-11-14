@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import re
 import subprocess
+import tarfile
 import tempfile
 import tomllib
 from collections.abc import Iterable
@@ -13,6 +15,24 @@ from omniship.runtime.context import TaskFailure
 
 if TYPE_CHECKING:
     from omniship.runtime.context import TaskContext, TaskLog
+
+
+def _is_sdist(path: Path) -> bool:
+    """Whether ``path`` is a Python source distribution.
+
+    Other ``.tar.gz`` files, such as CLI release archives, lack the
+    ``<name>-<version>/PKG-INFO`` file every sdist carries.
+    """
+
+    if not path.name.endswith(".tar.gz"):
+        return False
+    try:
+        with tarfile.open(path, "r:gz") as archive:
+            return any(
+                re.fullmatch(r"[^/]+/PKG-INFO", member.name) for member in archive
+            )
+    except (OSError, tarfile.TarError):
+        return False
 
 
 @dataclass(frozen=True)
@@ -134,10 +154,7 @@ class Python(PythonTools):
                 str(artifact.path)
                 for artifact in self.context.artifacts
                 if artifact.path.is_file()
-                and (
-                    artifact.path.suffix == ".whl"
-                    or artifact.path.name.endswith(".tar.gz")
-                )
+                and (artifact.path.suffix == ".whl" or _is_sdist(artifact.path))
             )
         if not selected:
             # Without files uv publishes dist/*, which may hold stale builds.

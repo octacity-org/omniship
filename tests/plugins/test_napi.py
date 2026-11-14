@@ -5,6 +5,8 @@ from pathlib import Path
 import pytest
 import yaml
 
+from omniship.core.artifact import Artifact
+from omniship.core.execution import Platform
 from omniship.core.stage import Stage
 from omniship.plugins.discovery import load_plugins
 from omniship.plugins.github.actions import GitHubActionsGenerator
@@ -95,8 +97,30 @@ def test_build_registers_only_fresh_output(tmp_path, monkeypatch):
     artifact = Napi(ctx).build(target="x86_64-unknown-linux-gnu", output="dist")
     assert "--platform" in calls[0]
     assert artifact.name == "napi-x86_64-unknown-linux-gnu"
+    assert artifact.platform == Platform.LINUX_X86_64
     assert not (artifact.path / "stale.node").exists()
     assert (artifact.path / "index.js").exists()
+
+
+@pytest.mark.parametrize(
+    ("target", "platform"),
+    [
+        ("aarch64-apple-darwin", Platform.MACOS_ARM64),
+        ("x86_64-pc-windows-msvc", Platform.WINDOWS_X86_64),
+        ("aarch64-unknown-linux-musl", Platform.LINUX_ARM64),
+        ("armv7-unknown-linux-gnueabihf", None),
+        ("wasm32-wasip1-threads", None),
+    ],
+)
+def test_build_tags_the_target_platform(tmp_path, monkeypatch, target, platform):
+    def run(self, args):
+        output = Path(args[args.index("--output-dir") + 1])
+        (output / "addon.node").write_bytes(b"binary")
+        return ""
+
+    monkeypatch.setattr(Napi, "_run", run)
+    artifact = Napi(TaskContext(tmp_path, {})).build(target=target, output="dist")
+    assert artifact.platform == platform
 
 
 def test_build_rejects_no_output_and_escaping_path(tmp_path, monkeypatch):
@@ -194,3 +218,25 @@ def test_npm_publishes_prebuilt_tarballs_without_scripts(tmp_path, monkeypatch):
     assert NpmPublish(files=("npm-package",)).compile(Stage.SHIP, tmp_path)[0].params[
         "files"
     ] == ["npm-package"]
+
+
+def test_npm_publishes_artifacts_imported_outside_the_working_directory(
+    tmp_path, monkeypatch
+):
+    imported = tmp_path / ".omniship" / "imported" / "addon.tgz"
+    imported.parent.mkdir(parents=True)
+    imported.write_bytes(b"tarball")
+    package = tmp_path / "packages" / "web"
+    package.mkdir(parents=True)
+    ctx = TaskContext(package, {}, artifacts=[Artifact.from_path(imported)])
+    calls = []
+    monkeypatch.setattr(Node, "_run", lambda self, args: calls.append(args))
+
+    Node(ctx).publish(files=("addon.tgz",), dry_run=True)
+
+    assert calls == [
+        ["npm", "publish", str(imported.resolve()), "--ignore-scripts", "--dry-run"]
+    ]
+    (tmp_path / "other.tgz").write_bytes(b"not an artifact")
+    with pytest.raises(TaskFailure, match="Invalid npm tarball"):
+        Node(ctx).publish(files=("../../other.tgz",), dry_run=True)

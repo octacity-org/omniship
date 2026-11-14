@@ -1,6 +1,6 @@
 import json
 import sys
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 import pytest
 
@@ -11,6 +11,7 @@ from omniship.core.artifact import (
     ArtifactSet,
 )
 from omniship.core.artifact_bundle import (
+    _tree_entries,
     export_artifacts,
     import_artifact_bundles,
     import_artifacts,
@@ -255,6 +256,24 @@ def test_artifact_bundle_round_trips_directories(tmp_path: Path) -> None:
     assert (artifact.path / "assets" / "app.css").read_text(encoding="utf-8") == (
         "body {}"
     )
+
+
+def test_directory_digest_order_is_the_same_on_windows() -> None:
+    names = ("README.md", "bin", "lib", "lib/x", "Makefile")
+
+    class WindowsTree(PureWindowsPath):
+        def rglob(self, pattern: str) -> list[PureWindowsPath]:
+            return [self / name for name in names]
+
+    root = WindowsTree("C:/bundle")
+
+    assert [entry.relative_to(root).as_posix() for entry in _tree_entries(root)] == [
+        "Makefile",
+        "README.md",
+        "bin",
+        "lib",
+        "lib/x",
+    ]
 
 
 def test_artifact_bundle_root_merges_parallel_build_outputs(tmp_path: Path) -> None:
@@ -584,3 +603,23 @@ def test_artifact_set_requires_consistent_producing_revision(tmp_path: Path) -> 
         artifacts.require(["linux", "macos"], consistent_revision=True)
     with pytest.raises(ValueError, match="expected revision 'abc123'"):
         artifacts.require(["macos"], revision="abc123")
+
+
+def test_artifact_set_prefers_an_exact_name_over_a_path_match(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "out").mkdir()
+    shadow = tmp_path / "out" / "app"
+    shadow.touch()
+    wanted = tmp_path / "x"
+    wanted.touch()
+    artifacts = ArtifactSet(
+        [
+            Artifact.from_path(shadow, name="linux-app"),
+            Artifact.from_path(wanted, name="app"),
+        ]
+    )
+
+    assert artifacts.get("app").path == wanted
+    assert artifacts.require(["app"])[0].path == wanted
+    assert artifacts.get("out/app").path == shadow

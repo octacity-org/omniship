@@ -168,12 +168,10 @@ class Homebrew(ToolFacade):
         matches = [item for item in self.context.artifacts if item.name == name]
         if len(matches) != 1:
             raise TaskFailure(f"Expected exactly one release artifact named {name}")
+        # A known artifact may be imported from outside the task's working
+        # directory, so only its type is checked here.
         path = matches[0].path
-        if (
-            not path.is_file()
-            or path.is_symlink()
-            or not path.resolve().is_relative_to(self.context.workspace)
-        ):
+        if not path.is_file() or path.is_symlink():
             raise TaskFailure(f"Invalid release artifact: {name}")
         return path
 

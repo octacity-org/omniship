@@ -447,3 +447,13 @@ def test_generate_writes_both_targets_from_one_workflow(tmp_path: Path) -> None:
     document = yaml.safe_load((tmp_path / ".gitlab-ci.yml").read_text("utf-8"))
     assert document["check-verify"]["tags"] == ["linux"]
     assert _validate_gitlab_schema(tmp_path / ".gitlab-ci.yml").returncode == 0
+
+
+def test_conditional_nodes_fail_generation(tmp_path: Path) -> None:
+    config = OmniShipConfig(
+        version=1,
+        check={"lint": NodeConfig(uses="core/noop", if_="tag")},
+    )
+
+    with pytest.raises(ValueError, match="Node 'lint' has a condition"):
+        _generate(tmp_path, config, Pipeline(targets=[GitLabCI()]))

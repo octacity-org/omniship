@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from omniship.core.artifact import Artifact
 from omniship.core.context import ExecutionContext
 from omniship.core.node import NodeInputs
 from omniship.core.result import NodeStatus
@@ -283,3 +284,31 @@ def test_direct_push_is_explicit_and_rejects_unpublished_commits(
             "origin",
             "HEAD:refs/heads/main",
         ]
+
+
+def test_formula_uses_artifacts_imported_outside_the_working_directory(
+    tmp_path, monkeypatch
+):
+    archive = tmp_path / ".omniship" / "imported" / "demo.tar.gz"
+    archive.parent.mkdir(parents=True)
+    archive.write_bytes(b"release")
+    package = tmp_path / "packages" / "cli"
+    package.mkdir(parents=True)
+    ctx = TaskContext(
+        package,
+        {"HOMEBREW_GITHUB_API_TOKEN": "secret"},
+        artifacts=[Artifact.from_path(archive, name="release")],
+    )
+    calls = []
+    monkeypatch.setattr(
+        Homebrew, "_run", lambda self, args, **kwargs: calls.append(args) or ""
+    )
+
+    Homebrew(ctx).formula(
+        formula="acme/tap/demo",
+        artifact="release",
+        version="1.2.3",
+        url="https://example.com/demo.tar.gz",
+    )
+
+    assert "--sha256=" + hashlib.sha256(b"release").hexdigest() in calls[-1]

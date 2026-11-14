@@ -104,9 +104,16 @@ class ArtifactSet:
             self._artifacts.append(artifact)
 
     def get(self, name_or_path: str) -> Artifact | None:
-        """Find the first artifact by name, full path, or path suffix."""
+        """Find an artifact by name, else by full path or path suffix.
 
-        return next((a for a in self._artifacts if a.matches(name_or_path)), None)
+        An exact name wins over a path match, so ``get("app")`` returns the
+        artifact named ``app`` even when an earlier one's path ends in
+        ``app``.
+        """
+
+        return next(
+            (a for a in self._artifacts if a.name == name_or_path), None
+        ) or next((a for a in self._artifacts if a.matches(name_or_path)), None)
 
     def __iter__(self) -> Iterator[Artifact]:
         return iter(self._artifacts)

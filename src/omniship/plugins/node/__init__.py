@@ -96,13 +96,19 @@ class Node(ToolFacade):
             if not selected:
                 raise TaskFailure("No npm package artifacts were provided")
             files = tuple(str(item.path) for item in selected)
+        # Imported artifacts live under the repository root, which can be
+        # outside a task's working directory; only other paths must stay inside.
+        artifact_paths = {item.path for item in self.context.artifacts}
         packages = []
         for value in files:
             artifact = self.context.artifacts.get(value)
             path = artifact.path if artifact else self.context.workspace / value
             path = path.resolve()
             if (
-                not path.is_relative_to(self.context.workspace)
+                not (
+                    path in artifact_paths
+                    or path.is_relative_to(self.context.workspace)
+                )
                 or not path.is_file()
                 or path.suffix != ".tgz"
             ):

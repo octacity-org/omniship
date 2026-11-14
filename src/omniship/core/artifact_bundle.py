@@ -37,6 +37,19 @@ def _update_file_digest(digest: _Digest, path: Path) -> None:
             digest.update(chunk)
 
 
+def _tree_entries(root: Path) -> list[Path]:
+    """Return everything below ``root`` in an order shared by every OS.
+
+    Windows paths compare case-insensitively, so sorting ``Path`` objects
+    would order mixed-case names differently there than on Linux or macOS.
+    """
+
+    return sorted(
+        root.rglob("*"),
+        key=lambda candidate: candidate.relative_to(root).parts,
+    )
+
+
 def _digest_path(path: Path) -> ArtifactDigest:
     digest = hashlib.sha256()
     if path.is_symlink():
@@ -44,7 +57,7 @@ def _digest_path(path: Path) -> ArtifactDigest:
     if path.is_file():
         _update_file_digest(digest, path)
     elif path.is_dir():
-        for candidate in sorted(path.rglob("*")):
+        for candidate in _tree_entries(path):
             if candidate.is_symlink():
                 raise ValueError(f"Artifact directory contains a symlink: {candidate}")
             relative = candidate.relative_to(path).as_posix().encode()

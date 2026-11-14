@@ -258,6 +258,8 @@ ctx.artifacts.add("docs/site", name="docs-site", platform=Platform.ANY)
 
 `Platform` has a member for each of `LINUX`, `MACOS` and `WINDOWS` with
 `X86_64` and `ARM64`, plus `ANY`. The tag is stored in the bundle manifest.
+`GoBuild` and `NapiBuild` tag their output with the build target; a target
+without a `Platform` member, such as WebAssembly, stays untagged.
 
 Check and Build imports use these platforms to pick variants. Artifacts that
 share a name but were built for different platforms, such as one library

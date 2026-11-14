@@ -51,6 +51,8 @@ class FakeGitHub:
             return self._response({**RELEASE, **json.loads(request.data)})
         if method == "POST" and url.startswith(UPLOADS):
             return self._response({})
+        if method == "DELETE" and url.startswith(f"{API}/releases/assets/"):
+            return io.BytesIO(b"")
         raise AssertionError(f"unexpected request {method} {url}")
 
     def calls(self, method: str, url: str) -> list[dict]:
@@ -179,24 +181,42 @@ def test_release_rerun_reuses_draft_and_skips_identical_assets(
     assert result.release_url.endswith("/releases/v1.0.0")
 
 
-def test_release_rerun_rejects_conflicting_existing_asset(
+@pytest.mark.parametrize(
+    "stale",
+    [
+        {"digest": "sha256:" + "0" * 64},  # rebuilt with different bytes
+        {"digest": None},  # left half-uploaded by a failed attempt
+    ],
+)
+def test_release_rerun_replaces_changed_draft_assets(
     tmp_path: Path,
     api: FakeGitHub,
+    stale: dict,
 ) -> None:
+    asset_url = f"{API}/releases/assets/11"
     api.releases = [
         {
             **RELEASE,
             "tag_name": "v1.0.0",
             "draft": True,
-            "assets": [{"name": "app.whl", "digest": "sha256:" + "0" * 64}],
+            "assets": [{"name": "app.whl", "url": asset_url, **stale}],
         }
     ]
 
-    with pytest.raises(TaskFailure, match="app.whl already exists"):
-        GitHub(_context(tmp_path, _wheel(tmp_path, "app.whl"))).release(
-            "octacity-org/demo", "v1.0.0"
-        )
-    assert not any(method == "PATCH" for method, _, _ in api.requests)
+    GitHub(_context(tmp_path, _wheel(tmp_path, "app.whl"))).release(
+        "octacity-org/demo", "v1.0.0"
+    )
+
+    writes = [
+        (method, url.split("?")[0])
+        for method, url, _ in api.requests
+        if method != "GET"
+    ]
+    assert writes == [
+        ("DELETE", asset_url),
+        ("POST", UPLOADS),
+        ("PATCH", f"{API}/releases/7"),
+    ]
 
 
 @pytest.mark.parametrize(

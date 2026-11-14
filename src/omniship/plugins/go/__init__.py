@@ -205,8 +205,11 @@ class Go(ToolFacade):
         race: bool = False,
         timeout: str | None = None,
         tags: Iterable[str] = (),
+        verbose: bool = False,
     ) -> None:
         command = ["go", "test"]
+        if verbose:
+            command.append("-v")
         if race:
             command.append("-race")
         if timeout is not None:
@@ -295,24 +298,22 @@ class GoTest:
     race: bool = False
     timeout: str | None = None
     tags: tuple[str, ...] = ()
+    verbose: bool = False
     name: str = "go-test"
 
     def compile(self, stage: Stage, workspace_root: Path) -> list[NodeSpec]:
         if stage != Stage.CHECK:
             raise WorkflowError("GoTest can only be used in the check stage")
-        return [
-            NodeSpec(
-                self.name,
-                stage,
-                "go/test",
-                {
-                    "packages": list(self.packages),
-                    "race": self.race,
-                    "timeout": self.timeout,
-                    "tags": list(self.tags),
-                },
-            )
-        ]
+        params: dict[str, object] = {
+            "packages": list(self.packages),
+            "race": self.race,
+            "timeout": self.timeout,
+            "tags": list(self.tags),
+        }
+        # Only when set, so existing configurations compile unchanged.
+        if self.verbose:
+            params["verbose"] = True
+        return [NodeSpec(self.name, stage, "go/test", params)]
 
 
 @dataclass(frozen=True)
@@ -365,6 +366,7 @@ class _TestConfig(BaseModel):
     race: bool = False
     timeout: str | None = None
     tags: list[str] = Field(default_factory=list)
+    verbose: bool = False
 
 
 class _VetConfig(BaseModel):
@@ -421,6 +423,7 @@ def _operations() -> tuple[FacadeOperation, ...]:
                 race=cfg.race,
                 timeout=cfg.timeout,
                 tags=cfg.tags,
+                verbose=cfg.verbose,
             ),
         ),
         FacadeOperation(

@@ -121,9 +121,14 @@ def _github_repository(workspace_root: Path) -> str:
 
 
 @dataclass(frozen=True)
+class GitHubPushedTag:
+    """The tag whose push started the run, read when the release job runs."""
+
+
+@dataclass(frozen=True)
 class GitHubRelease:
     repository: str | None = None
-    tag: str | GitHubStringInput | None = None
+    tag: str | GitHubStringInput | GitHubPushedTag | None = None
     notes: str | None = "auto"
     title: str | None = None
     draft: bool = False
@@ -143,15 +148,15 @@ class GitHubRelease:
     def compile(self, stage: Stage, workspace_root: Path) -> list[NodeSpec]:
         if stage != Stage.SHIP:
             raise WorkflowError("GitHubRelease can only be used in the ship stage")
-        tag: object
-        if isinstance(self.tag, GitHubStringInput):
-            tag = runtime_input_reference(self.tag.name)
-        else:
-            tag = self.tag or f"v{_project_version(workspace_root)}"
         params: dict[str, object] = {
-            "repository": self.repository or _github_repository(workspace_root),
-            "tag": tag,
+            "repository": self.repository or _github_repository(workspace_root)
         }
+        if isinstance(self.tag, GitHubPushedTag):
+            params["tag_from_ref"] = True
+        elif isinstance(self.tag, GitHubStringInput):
+            params["tag"] = runtime_input_reference(self.tag.name)
+        else:
+            params["tag"] = self.tag or f"v{_project_version(workspace_root)}"
         if self.notes == "auto":
             params["generate_notes"] = True
         elif self.notes:

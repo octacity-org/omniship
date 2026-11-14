@@ -111,7 +111,9 @@ omniship generate --check
 ```
 
 `GitHubRelease` derives `v<version>` from `[project].version` in
-`pyproject.toml` when `tag` is omitted. The generated GitHub Actions job uses
+`pyproject.toml` when `tag` is omitted. `tag=GitHubPushedTag()` releases the
+tag whose push started the run instead, and fails when the run was not started
+by a tag push. The generated GitHub Actions job uses
 GitHub's own token; generating the workflows does not require release
 credentials on a developer machine.
 
@@ -120,7 +122,9 @@ pushed one, so bump the version and regenerate before tagging. A new tag is
 created at the built commit. The release is created as a draft and published
 only after every asset is uploaded, so it is never public without its files;
 `draft=True` leaves it a draft. Re-running Ship reuses that draft and skips
-assets already uploaded with identical content. A release that is already
+assets already uploaded with identical content; an asset whose content differs,
+or which cannot be verified, is replaced, since nobody can download a draft's
+assets yet. A release that is already
 published is never changed: the release fails instead. Release assets must be
 files: directory artifacts are skipped unless listed in `files`, which fails.
 
@@ -683,7 +687,8 @@ Go target selection belongs to `GoBuild`; it is not generic runner metadata.
 Omitting `target` builds natively for the selected runner.
 
 The Go plugin also provides `GoFmt`, `GoVet`, and `GoModDownload`. `GoTest`
-supports race detection, a timeout, and build tags. `GoBuild` supports
+supports race detection, a timeout, build tags, and `verbose=True` for
+`go test -v`. `GoBuild` supports
 `cgo_enabled`, tags, linker flags, and `trimpath`; executable suffixes follow
 the requested target or native Windows runner. Output paths may use `{os}` and
 `{arch}` to give each target a distinct artifact name. `GoToolchain(cache=True)` uses

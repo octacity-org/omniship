@@ -1384,6 +1384,101 @@ def test_cancel_superseded_cannot_cancel_a_pages_ship(tmp_path: Path) -> None:
         )
 
 
+def test_workflow_overrides_and_extra_jobs_edit_the_generated_yaml(
+    tmp_path: Path,
+) -> None:
+    shared = {"OMNISHIP_DEBUG": "1"}
+    github = GitHubActions(
+        check=GitHubWorkflow(
+            file="check.yml",
+            name="Check",
+            overrides={
+                "jobs.check-test.if": "${{ github.event_name == 'push' }}",
+                "jobs.check-test.steps.Run Test.continue-on-error": True,
+                "jobs.check-test.steps.Run Test.env.EXTRA": "yes",
+                "jobs.check-test.env": shared,
+                "jobs.notify.env": shared,
+            },
+            extra_jobs={
+                "notify": {
+                    "needs": "check-complete",
+                    "runs-on": "ubuntu-24.04",
+                    "steps": [{"run": "echo checked"}],
+                }
+            },
+        )
+    )
+    pipeline = Pipeline(targets=[github])
+
+    @pipeline.check
+    def check(stage):
+        @stage.task()
+        def test(ctx):
+            pass
+
+    documents = _generated_documents(tmp_path, pipeline)
+    jobs = documents["check.yml"]["jobs"]
+
+    assert jobs["check-test"]["if"] == "${{ github.event_name == 'push' }}"
+    (step,) = [s for s in jobs["check-test"]["steps"] if s.get("name") == "Run Test"]
+    assert step["continue-on-error"] is True
+    assert step["env"]["EXTRA"] == "yes"
+    assert step["env"]["OMNISHIP_REF_TYPE"] == "${{ github.ref_type }}"
+    assert list(jobs)[-1] == "notify"
+    assert jobs["notify"]["steps"] == [{"run": "echo checked"}]
+    assert jobs["notify"]["env"] == shared
+    # Other workflows are unchanged.
+    assert "notify" not in documents["build.yml"]["jobs"]
+    config = compile_pipeline(pipeline, tmp_path / "workflow.py")
+    generated = GitHubActionsGenerator(PluginRegistry()).generate(
+        config, tmp_path / "workflow.py", tmp_path / "omniship.yaml", pipeline
+    )
+    assert not any("&id" in item.content for item in generated)
+
+
+def test_workflow_overrides_name_the_file_when_a_path_is_wrong(
+    tmp_path: Path,
+) -> None:
+    pipeline = Pipeline(
+        targets=[
+            GitHubActions(
+                ship=GitHubWorkflow(
+                    file="ship.yml", name="Ship", overrides={"jobs.relase.if": "x"}
+                )
+            )
+        ]
+    )
+
+    with pytest.raises(ValueError, match="ship.yml override 'jobs.relase.if'"):
+        _generated_documents(tmp_path, pipeline)
+
+
+def test_workflow_extra_jobs_cannot_replace_generated_jobs(tmp_path: Path) -> None:
+    pipeline = Pipeline(
+        targets=[
+            GitHubActions(
+                check=GitHubWorkflow(
+                    file="check.yml",
+                    name="Check",
+                    extra_jobs={"check-complete": {"runs-on": "x"}},
+                )
+            )
+        ]
+    )
+
+    with pytest.raises(ValueError, match="extra job 'check-complete'"):
+        _generated_documents(tmp_path, pipeline)
+
+
+def test_workflow_escape_hatches_reject_invalid_values() -> None:
+    with pytest.raises(TypeError, match="overrides"):
+        GitHubWorkflow(file="check.yml", name="Check", overrides=["jobs.x"])
+    with pytest.raises(ValueError, match="override path"):
+        GitHubWorkflow(file="check.yml", name="Check", overrides={"jobs..x": 1})
+    with pytest.raises(TypeError, match="extra_jobs"):
+        GitHubWorkflow(file="check.yml", name="Check", extra_jobs={"x": "run"})
+
+
 def test_run_controls_reject_invalid_values() -> None:
     github = GitHubActions()
 

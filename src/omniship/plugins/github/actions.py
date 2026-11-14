@@ -14,6 +14,12 @@ from omniship.config.models import NodeConfig, OmniShipConfig
 from omniship.core.execution import CacheSpec, SecretRef, placement_for
 from omniship.core.stage import Stage
 from omniship.plugins.api import CONDITION_UNSUPPORTED, GeneratedFile
+from omniship.plugins.overrides import (
+    add_extra_jobs,
+    apply_overrides,
+    normalize_extra_jobs,
+    normalize_overrides,
+)
 from omniship.plugins.registry import PluginRegistry
 from omniship.workflow.model import GitPluginPackage, Pipeline
 
@@ -876,10 +882,21 @@ class GitHubWorkflow:
     # Cancel a run when a newer one starts for the same pull request or
     # branch. Tag runs are never cancelled.
     cancel_superseded: bool = False
+    # Escape hatches for what OmniShip does not model yet: raw YAML set at a
+    # path in the generated file, and raw jobs added beside the generated
+    # ones. Neither is validated by OmniShip.
+    overrides: Mapping[str | tuple[str | int, ...], object] = field(
+        default_factory=dict
+    )
+    extra_jobs: Mapping[str, Mapping[str, object]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not isinstance(self.cancel_superseded, bool):
             raise TypeError("cancel_superseded must be a bool")
+        normalize_overrides(self.overrides)
+        normalize_extra_jobs(self.extra_jobs)
+        object.__setattr__(self, "overrides", dict(self.overrides))
+        object.__setattr__(self, "extra_jobs", dict(self.extra_jobs))
         if not isinstance(self.file, str) or not self.file:
             raise TypeError("GitHub workflow file must be a non-empty string")
         if "/" in self.file or "\\" in self.file:
@@ -1908,8 +1925,14 @@ class GitHubActionsGenerator:
                     "group": "pages",
                     "cancel-in-progress": False,
                 }
+            jobs = dict(jobs)
+            add_extra_jobs(
+                jobs, normalize_extra_jobs(workflow.extra_jobs), workflow.file
+            )
             document["jobs"] = jobs
-            return document
+            return apply_overrides(
+                document, normalize_overrides(workflow.overrides), workflow.file
+            )
 
         documents = (
             (

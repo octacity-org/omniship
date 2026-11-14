@@ -659,6 +659,51 @@ Before imported artifacts reach the task, the generated job verifies the
 source workflow conclusion and revision. Cross-repository private artifacts
 need a secret whose token can read Actions in the source repository.
 
+### Raw YAML escape hatches
+
+When OmniShip does not model a setting yet, a workflow can still set it in
+the generated YAML. `overrides` sets a value at a dotted path, and
+`extra_jobs` adds whole jobs beside the generated ones:
+
+```python
+GitHubActions(
+    ship=GitHubWorkflow(
+        file="ship.yml",
+        name="Ship",
+        triggers=[GitHubWorkflowDispatch(inputs=[GitHubBooleanInput("publish")])],
+        overrides={
+            "jobs.ship-github-release.if": "${{ inputs.publish }}",
+            "jobs.ship-github-release.steps.Run GitHub Release.continue-on-error": True,
+        },
+        extra_jobs={
+            "notify": {
+                "needs": "ship-complete",
+                "runs-on": "ubuntu-24.04",
+                "steps": [{"run": "echo released"}],
+            }
+        },
+    ),
+)
+```
+
+- A path segment names a mapping key, a list index, or, in a list, the item
+  whose `name` matches, such as a step. `-` appends to a list.
+- A path whose key contains a dot can be a tuple instead:
+  `("jobs", "ship-github-release", "steps", "Set up Python 3.14", "if")`.
+- `None` removes the key or list item.
+- Every part of the path except the last must already exist in the generated
+  file, so a typo, or an override that a newer OmniShip no longer matches,
+  fails generation instead of being ignored.
+- An extra job cannot reuse a generated job's name.
+
+Overrides are applied in order after OmniShip builds the file, and
+`omniship generate --check` still covers them because they live in the
+workflow source. OmniShip does not validate them: changing keys it relies on,
+such as `needs`, artifact steps, or permissions, can break stage barriers or
+artifact handoff. Job IDs are `<stage>-<task>`, as shown in the generated
+file. `GitLabCI(overrides=..., extra_jobs=...)` works the same way for
+`.gitlab-ci.yml`, where jobs are top-level keys.
+
 ## Language plugins
 
 Official Node.js, Bun, Go, Rust, and Zig plugins provide typed toolchain

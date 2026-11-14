@@ -342,7 +342,9 @@ class GitHub:
             method=method,
         )
         with urllib.request.urlopen(request, timeout=15) as response:
-            return json.loads(response.read().decode("utf-8"))
+            # DELETE answers 204 with no body.
+            body = response.read()
+            return json.loads(body.decode("utf-8")) if body else None
 
     @classmethod
     def _published_release(
@@ -395,24 +397,26 @@ class GitHub:
         if not upload_url or "{" not in upload_url:
             return
         base_upload_url = upload_url.split("{")[0]
-        existing = {
-            asset.get("name"): asset.get("digest") for asset in release.get("assets", [])
-        }
+        existing = {asset.get("name"): asset for asset in release.get("assets", [])}
         for artifact in artifacts:
             content = artifact.path.read_bytes()
-            if artifact.name in existing:
+            if asset := existing.get(artifact.name):
                 digest = f"sha256:{hashlib.sha256(content).hexdigest()}"
-                if existing[artifact.name] != digest:
-                    reason = (
-                        "different content"
-                        if existing[artifact.name]
-                        else "content that cannot be verified"
+                if asset.get("digest") == digest:
+                    self.context.log.info(
+                        f"Release asset {artifact.name} already uploaded"
                     )
+                    continue
+                # Only drafts reach this point, and nobody can download a
+                # draft's assets yet, so a rebuilt file or a partial upload
+                # from an earlier attempt is replaced.
+                if not asset.get("url"):
                     raise TaskFailure(
-                        f"Release asset {artifact.name} already exists with {reason}"
+                        f"Release asset {artifact.name} already exists and "
+                        "cannot be replaced"
                     )
-                self.context.log.info(f"Release asset {artifact.name} already uploaded")
-                continue
+                self._api_request(token, asset["url"], "DELETE")
+                self.context.log.info(f"Replacing release asset {artifact.name}")
             request = urllib.request.Request(
                 f"{base_upload_url}?name={urllib.parse.quote(artifact.name, safe='')}",
                 data=content,

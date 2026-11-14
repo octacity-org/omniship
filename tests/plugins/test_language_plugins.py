@@ -464,6 +464,29 @@ def test_go_facade_constructs_check_and_cross_build_commands(
     assert [item.platform for item in context.artifacts] == [Platform.WINDOWS_X86_64]
 
 
+def test_go_test_can_print_verbose_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        Go, "_run", lambda self, arguments, **_: calls.append(arguments)
+    )
+    pipeline = Pipeline()
+
+    @pipeline.check
+    def check(stage):
+        stage.task(GoTest(verbose=True))
+        stage.task(GoTest(name="quiet"))
+
+    config = compile_pipeline(pipeline, tmp_path / "workflow.py")
+    Go(TaskContext(tmp_path, {})).test(verbose=True)
+
+    assert config.check["go-test"].with_["verbose"] is True
+    # Unset, the option stays out of the configuration.
+    assert "verbose" not in config.check["quiet"].with_
+    assert calls == [["go", "test", "-v", "./..."]]
+
+
 def test_go_target_platform_names_only_known_platforms() -> None:
     assert GoTarget(GoOS.DARWIN, GoArch.ARM64).platform == Platform.MACOS_ARM64
     assert GoTarget(GoOS.WASIP1, GoArch.WASM).platform is None

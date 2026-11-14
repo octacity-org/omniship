@@ -249,6 +249,54 @@ async def test_github_release_operation_accepts_auto_prerelease(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("ref_type", "ref_name", "released"),
+    [("tag", "v2.1.0", "v2.1.0"), ("branch", "main", None), ("tag", "", None)],
+)
+async def test_github_release_operation_can_release_the_pushed_tag(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ref_type: str,
+    ref_name: str,
+    released: str | None,
+) -> None:
+    calls: list[object] = []
+
+    def release(self: GitHub, **kwargs: object) -> GitHubReleaseResult:
+        calls.append(kwargs["tag"])
+        return GitHubReleaseResult("octacity-org/ash", str(kwargs["tag"]), "", 0)
+
+    monkeypatch.setattr(GitHub, "release", release)
+    monkeypatch.setenv("OMNISHIP_REF_TYPE", ref_type)
+    monkeypatch.setenv("OMNISHIP_REF_NAME", ref_name)
+
+    result = await GithubReleaseOperation().execute(
+        ExecutionContext(workspace_root=tmp_path, stage=Stage.SHIP),
+        NodeInputs(params={"repository": "octacity-org/ash", "tag_from_ref": True}),
+    )
+
+    if released is None:
+        assert result.is_failed
+        assert "not started by a tag push" in result.error_message
+        assert calls == []
+    else:
+        assert result.is_success
+        assert calls == [released]
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"repository": "octacity-org/ash"},
+        {"repository": "octacity-org/ash", "tag": "v1.0.0", "tag_from_ref": True},
+    ],
+)
+def test_github_release_config_needs_exactly_one_tag_source(params) -> None:
+    with pytest.raises(ValidationError, match="exactly one of tag and tag_from_ref"):
+        GithubReleaseConfig.model_validate(params)
+
+
+@pytest.mark.asyncio
 async def test_github_release_requires_environment_token(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

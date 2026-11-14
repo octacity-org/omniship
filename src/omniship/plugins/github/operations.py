@@ -3,10 +3,10 @@ import os
 import time
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from omniship.core.context import ExecutionContext
-from omniship.core.execution import IdentityToken
+from omniship.core.execution import REF_NAME_ENV, REF_TYPE_ENV, IdentityToken
 from omniship.core.node import NodeInputs
 from omniship.core.result import NodeResult, NodeStatus
 from omniship.core.stage import Stage
@@ -118,7 +118,13 @@ class GithubReleaseConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     repository: str = Field(..., description="GitHub repository in 'owner/repo' format")
-    tag: str = Field(..., description="Git release tag name, e.g. 'v1.0.0'")
+    tag: str | None = Field(
+        default=None, description="Git release tag name, e.g. 'v1.0.0'"
+    )
+    tag_from_ref: bool = Field(
+        default=False,
+        description="Release the tag whose push started the run",
+    )
     title: str | None = Field(default=None, description="Release title")
     body: str | None = Field(default=None, description="Release notes / description")
     generate_notes: bool = Field(
@@ -141,6 +147,12 @@ class GithubReleaseConfig(BaseModel):
         default=False,
         description="Dry run mode: simulate release creation and artifact upload",
     )
+
+    @model_validator(mode="after")
+    def one_tag_source(self):
+        if (self.tag is None) == (not self.tag_from_ref):
+            raise ValueError("set exactly one of tag and tag_from_ref")
+        return self
 
 
 class GithubTagConfig(BaseModel):
@@ -236,11 +248,23 @@ class GithubReleaseOperation:
             host=context.host,
         )
         notes = "auto" if cfg.generate_notes else cfg.body
+        tag = cfg.tag
+        if cfg.tag_from_ref:
+            tag = task_context.env.get(REF_NAME_ENV)
+            if task_context.env.get(REF_TYPE_ENV) != "tag" or not tag:
+                return NodeResult(
+                    status=NodeStatus.FAILED,
+                    duration=time.monotonic() - start_time,
+                    error_message=(
+                        "github/release uses the pushed tag, but this run was "
+                        "not started by a tag push"
+                    ),
+                )
         try:
             release = await asyncio.to_thread(
                 GitHub(task_context).release,
                 repository=cfg.repository,
-                tag=cfg.tag,
+                tag=tag,
                 notes=notes,
                 title=cfg.title,
                 draft=cfg.draft,

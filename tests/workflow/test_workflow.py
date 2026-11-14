@@ -7,6 +7,7 @@ from omniship import Logging, LogLevel, Pipeline
 from omniship.plugins.github import (
     GitHubActions,
     GitHubPages,
+    GitHubPushedTag,
     GitHubRelease,
     GitHubRunner,
     GitHubTag,
@@ -105,6 +106,23 @@ def test_github_release_passes_auto_prerelease_to_the_operation(
     config = compile_pipeline(pipeline, tmp_path / "workflow.py")
 
     assert config.ship["github-release"].with_["prerelease"] == "auto"
+
+
+def test_github_release_can_use_the_pushed_tag(tmp_path: Path) -> None:
+    # tmp_path has no pyproject.toml, as in a Go repository.
+    pipeline = Pipeline()
+
+    @pipeline.ship
+    def ship(stage):
+        stage.task(GitHubRelease(repository="octacity-org/ash", tag=GitHubPushedTag()))
+
+    config = compile_pipeline(pipeline, tmp_path / "workflow.py")
+
+    assert config.ship["github-release"].with_ == {
+        "repository": "octacity-org/ash",
+        "tag_from_ref": True,
+        "generate_notes": True,
+    }
 
 
 def test_github_release_rejects_unknown_prerelease_strings() -> None:

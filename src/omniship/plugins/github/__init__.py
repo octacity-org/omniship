@@ -20,7 +20,13 @@ from .actions import (
     GitHubWorkflowArtifacts,
     GitHubWorkflowDispatch,
 )
-from .blocks import GitHubExternalWorkflow, GitHubPages, GitHubRelease, GitHubTag
+from .blocks import (
+    GitHubExternalWorkflow,
+    GitHubPages,
+    GitHubPushedTag,
+    GitHubRelease,
+    GitHubTag,
+)
 from .operations import register_github_plugin
 from .runtime import GitHub, GitHubPagesResult, GitHubTagResult
 from .timezones import GitHubTimezone
@@ -43,6 +49,7 @@ __all__ = [
     "GitHub",
     "GitHubPages",
     "GitHubPagesResult",
+    "GitHubPushedTag",
     "GitHubRelease",
     "GitHubTag",
     "GitHubTagResult",
